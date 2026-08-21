@@ -18,6 +18,14 @@ it carries Chromium and Node.js security updates.
 - React and React DOM 19.2.8 - MIT License.
 - Zod 4.4.3 - MIT License.
 
+## Browser preview tooling
+
+- Vite 8.2.2 - MIT License.
+- `@vitejs/plugin-react` 6.1.0 - MIT License.
+
+These are development dependencies for the browser preview. Electron Forge remains NovelReaper's
+planned Windows packager.
+
 ## Offline reading fonts
 
 The following Fontsource packages are pinned at 5.3.0 and licensed under the SIL
@@ -35,6 +43,6 @@ bundled into application assets.
 
 ## Planned EPUB engine
 
-Foliate-js is not integrated during Phase 0/1. Phase 3 will pin and audit commit
+Foliate-js is not integrated during Browser Phase B1. Phase B2 will pin and audit commit
 `78914aef4466eb960965702401634c2cb348e9b1` before any code is vendored or bundled.
 Its upstream repository is <https://github.com/johnfactotum/foliate-js>.

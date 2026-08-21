@@ -8,7 +8,7 @@
   "license": "UNLICENSED",
   "author": "NovelReaper contributors",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.12.0"
   },
   "packageManager": "npm@10.8.2",
   "scripts": {
@@ -17,12 +17,16 @@
     "package": "electron-forge package",
     "make": "electron-forge make",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.vite.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test --config playwright.e2e.config.ts",
     "test:visual": "playwright test --config playwright.visual.config.ts",
     "test:security": "playwright test --config playwright.security.config.ts",
+    "web": "vite --config vite.browser.config.mts",
+    "web:build": "vite build --config vite.browser.config.mts",
+    "web:preview": "vite preview --config vite.browser.config.mts",
+    "web:test": "vitest run tests/unit/browser tests/component",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },
@@ -53,6 +57,7 @@
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.4",
     "@types/webpack-env": "1.18.8",
+    "@vitejs/plugin-react": "6.1.0",
     "axe-core": "4.13.0",
     "css-loader": "7.1.4",
     "electron": "43.4.1",
@@ -69,6 +74,7 @@
     "typescript": "5.9.3",
     "typescript-eslint": "8.67.0",
     "vitest": "4.1.11",
+    "vite": "8.2.2",
     "webpack": "5.109.2",
     "webpack-cli": "7.2.2"
   }

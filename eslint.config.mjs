@@ -9,6 +9,7 @@ export default tseslint.config(
     ignores: [
       '.webpack/**',
       'coverage/**',
+      'dist/**',
       'eslint.config.mjs',
       'node_modules/**',
       'out/**',
@@ -26,7 +27,9 @@ export default tseslint.config(
         ...globals.node,
       },
       parserOptions: {
-        projectService: true,
+        projectService: {
+          allowDefaultProject: ['vite.browser.config.mts'],
+        },
         tsconfigRootDir: import.meta.dirname,
       },
     },
@@ -40,6 +43,12 @@ export default tseslint.config(
       '@typescript-eslint/consistent-type-imports': 'error',
       '@typescript-eslint/no-floating-promises': 'error',
       '@typescript-eslint/no-misused-promises': 'error',
+    },
+  },
+  {
+    files: ['vite.browser.config.mts'],
+    rules: {
+      '@typescript-eslint/no-unsafe-call': 'off',
     },
   },
   {
