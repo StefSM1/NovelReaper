@@ -108,7 +108,7 @@ test.describe('reader containment', () => {
     await expect(
       running.page.getByRole('button', { name: 'Restart reading surface' }),
     ).toBeVisible();
-    await expect(running.page.getByText('Secure reader shell')).toBeVisible();
+    await expect(running.page.getByTestId('titlebar')).toContainText('NovelReaper');
 
     await running.page.getByRole('button', { name: 'Restart reading surface' }).click();
     await expect(running.page.getByText('Reader: ready')).toBeVisible();

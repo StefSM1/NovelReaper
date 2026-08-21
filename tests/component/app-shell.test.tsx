@@ -75,20 +75,18 @@ function createPlatform(options?: {
 }
 
 describe('shared NovelReaper application shell', () => {
-  it('retains the bounded Electron shell controls', async () => {
+  it('retains the bounded Electron shell controls without a fullscreen action', async () => {
     const user = userEvent.setup();
     const platform = createPlatform();
     render(<App platform={platform} />);
 
-    expect(await screen.findByText('Secure reader shell')).toBeVisible();
+    expect(await screen.findByText('NovelReaper')).toBeVisible();
     expect(screen.getByTestId('reader-frame')).toBeInTheDocument();
-
-    await user.click(screen.getByRole('button', { name: 'Fullscreen' }));
-    expect(platform.toggleFullscreen).toHaveBeenCalledOnce();
-    expect(await screen.findByRole('button', { name: 'Exit fullscreen' })).toBeVisible();
+    expect(screen.queryByRole('button', { name: /fullscreen/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Open EPUB' })).toBeDisabled();
 
     await user.click(screen.getByRole('button', { name: 'Focus mode' }));
-    expect(screen.getByRole('button', { name: 'Exit focus · Esc' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Exit focus' })).toBeVisible();
   });
 
   it('accepts a browser-selected publication without Electron', async () => {
@@ -114,7 +112,7 @@ describe('shared NovelReaper application shell', () => {
     });
     render(<App platform={platform} />);
 
-    expect(await screen.findByText('Local EPUB preview')).toBeVisible();
+    expect(await screen.findByRole('button', { name: 'Open EPUB' })).toBeVisible();
     await user.click(screen.getByRole('button', { name: 'Open EPUB' }));
 
     expect(await screen.findAllByText('Calm.epub')).toHaveLength(2);
@@ -145,7 +143,7 @@ describe('shared NovelReaper application shell', () => {
     });
     render(<App platform={platform} />);
 
-    expect(await screen.findByText('Local EPUB preview')).toBeVisible();
+    expect(await screen.findByRole('button', { name: 'Open EPUB' })).toBeVisible();
     await user.click(screen.getByRole('button', { name: 'Open EPUB' }));
     expect(await screen.findByRole('heading', { name: 'Calm.epub' })).toBeVisible();
 
@@ -163,7 +161,7 @@ describe('shared NovelReaper application shell', () => {
     const platform = createPlatform();
     render(<App platform={platform} />);
 
-    await screen.findByText('Secure reader shell');
+    await screen.findByText('NovelReaper');
     act(() => {
       platform.publishReader({
         status: 'crashed',

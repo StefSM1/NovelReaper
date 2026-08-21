@@ -15,7 +15,7 @@ test.describe('packaged NovelReaper shell', () => {
 
   test('starts the shell and isolated reader', async () => {
     if (!running) throw new Error('NovelReaper did not launch.');
-    await expect(running.page.getByText('Secure reader shell')).toBeVisible();
+    await expect(running.page.getByTestId('titlebar')).toContainText('NovelReaper');
     await expect(running.page.getByText('Reader: ready')).toBeVisible();
 
     const mainWorld = await running.page.evaluate(() => ({

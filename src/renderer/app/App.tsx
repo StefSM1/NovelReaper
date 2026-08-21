@@ -5,17 +5,12 @@ import {
   type NovelReaperPlatform,
   type PublicationDescriptor,
 } from '../../platform/contracts';
-import type { ReaderStateSnapshot, WindowStateSnapshot } from '../../shared/contracts/ipc';
+import type { ReaderStateSnapshot } from '../../shared/contracts/ipc';
 
 const INITIAL_READER_STATE: ReaderStateSnapshot = {
   status: 'idle',
   generation: 0,
   canRetry: false,
-};
-
-const INITIAL_WINDOW_STATE: WindowStateSnapshot = {
-  isMaximized: false,
-  isFullScreen: false,
 };
 
 interface AppProps {
@@ -36,7 +31,6 @@ function formatDate(timestamp: number): string {
 export function App({ platform }: AppProps): React.JSX.Element {
   const readerFrameRef = useRef<HTMLDivElement>(null);
   const [readerState, setReaderState] = useState(INITIAL_READER_STATE);
-  const [windowState, setWindowState] = useState(INITIAL_WINDOW_STATE);
   const [publication, setPublication] = useState<PublicationDescriptor>();
   const [isFocusMode, setIsFocusMode] = useState(false);
   const [isBootstrapping, setIsBootstrapping] = useState(true);
@@ -52,7 +46,6 @@ export function App({ platform }: AppProps): React.JSX.Element {
       .then((state) => {
         if (!mounted) return;
         setReaderState(state.reader);
-        setWindowState(state.window);
         setPublication(state.recentPublication);
         setNotices(state.notices);
         setIsBootstrapping(false);
@@ -64,7 +57,6 @@ export function App({ platform }: AppProps): React.JSX.Element {
       });
 
     const unsubscribeReader = platform.onReaderState(setReaderState);
-    const unsubscribeWindow = platform.onWindowState(setWindowState);
     const unsubscribeExitFocus = platform.onExitFocusRequested(() => {
       setIsFocusMode(false);
     });
@@ -72,7 +64,6 @@ export function App({ platform }: AppProps): React.JSX.Element {
     return () => {
       mounted = false;
       unsubscribeReader();
-      unsubscribeWindow();
       unsubscribeExitFocus();
     };
   }, [platform]);
@@ -154,14 +145,6 @@ export function App({ platform }: AppProps): React.JSX.Element {
       });
   };
 
-  const toggleFullscreen = (): void => {
-    setOperationError(undefined);
-    void platform
-      .toggleFullscreen()
-      .then(setWindowState)
-      .catch((error: unknown) => setOperationError(platformErrorMessage(error)));
-  };
-
   const isBrowserPreview = platform.environment === 'browser-preview';
   const publicationStatus = publication?.availability ?? 'none';
 
@@ -174,15 +157,7 @@ export function App({ platform }: AppProps): React.JSX.Element {
           </span>
           <span>NovelReaper</span>
         </div>
-        {isBrowserPreview ? <span className="preview-ribbon">Browser preview</span> : null}
-      </header>
-
-      <nav className="phase-toolbar" aria-label="Reader shell controls">
-        <div>
-          <p className="eyebrow">{isBrowserPreview ? 'Browser Phase B1' : 'Desktop foundation'}</p>
-          <strong>{isBrowserPreview ? 'Local EPUB preview' : 'Secure reader shell'}</strong>
-        </div>
-        <div className="phase-toolbar__actions">
+        <nav className="titlebar__actions" aria-label="Reader controls">
           <button
             className="button button--primary"
             type="button"
@@ -194,15 +169,8 @@ export function App({ platform }: AppProps): React.JSX.Element {
           <button type="button" onClick={() => setIsFocusMode((value) => !value)}>
             {isFocusMode ? 'Exit focus' : 'Focus mode'}
           </button>
-          <button
-            type="button"
-            disabled={!platform.capabilities.fullscreen}
-            onClick={toggleFullscreen}
-          >
-            {windowState.isFullScreen ? 'Exit fullscreen' : 'Fullscreen'}
-          </button>
-        </div>
-      </nav>
+        </nav>
+      </header>
 
       <main className="shell-content">
         <aside className="shell-panel shell-panel--contents" aria-label="Contents preview">
@@ -417,14 +385,7 @@ export function App({ platform }: AppProps): React.JSX.Element {
         <span>Environment: {isBrowserPreview ? 'Browser' : 'Electron'}</span>
         <span>Source: {publicationStatus}</span>
         <span>Reader engine: {isBrowserPreview ? 'B2 pending' : readerState.status}</span>
-        <span>{windowState.isFullScreen ? 'Fullscreen' : 'Windowed'}</span>
       </footer>
-
-      {isFocusMode ? (
-        <button className="focus-exit" type="button" onClick={() => setIsFocusMode(false)}>
-          Exit focus · Esc
-        </button>
-      ) : null}
 
       {bootstrapError ? (
         <div className="bootstrap-error" role="alert">
