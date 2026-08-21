@@ -1,0 +1,34 @@
+# Dependencies and local package-manager data
+node_modules/
+.npm-cache/
+
+# Electron Forge and compiled output
+.webpack/
+out/
+dist/
+
+# Tests and coverage
+coverage/
+playwright-report/
+test-results/
+
+# Logs and local environment files
+*.log
+.env
+.env.*
+!.env.example
+
+# Editors and operating-system files
+.idea/
+.vscode/
+Thumbs.db
+Desktop.ini
+
+# Personal books must never be committed.
+*.epub
+!tests/fixtures/public/*.epub
+!tests/fixtures/synthetic/*.epub
+!tests/fixtures/malicious/*.epub
+
+# Plans
+NovelReaper_IMPLEMENTATION_PLAN.md
