@@ -20,23 +20,47 @@ export interface ReaderPublication {
   metadata: ReaderMetadata;
   toc: ReaderTocItem[];
   spineLength: number;
+  linearSpineIndices: number[];
 }
 
-export interface ReaderRelocation {
+export interface ReaderLocator {
   spineIndex: number;
+  href: string;
   fractionInChapter: number;
   cfi?: string;
+  textQuote?: string;
+}
+
+export interface ReaderRelocation extends ReaderLocator {
   chapterLabel?: string;
   activeTocId?: string;
 }
 
+export type ReaderNavigationSource = 'contents' | 'finish' | 'internal' | 'next' | 'previous';
+
+export type ReaderNavigationRequest =
+  | { source: 'contents'; target: ReaderNavigationTarget }
+  | { source: 'internal'; target: ReaderNavigationTarget }
+  | { source: 'next' | 'previous' | 'finish' };
+
+export interface ReaderNavigationState {
+  busy: boolean;
+  finished: boolean;
+}
+
 export type ReaderEngineEvent =
   | { type: 'relocation'; location: ReaderRelocation }
+  | { type: 'navigation-request'; request: ReaderNavigationRequest }
   | { type: 'error'; message: string; recoverable: boolean };
 
 export interface ReaderEngine {
-  open: (source: File, container: HTMLElement) => Promise<ReaderPublication>;
-  goTo: (target: ReaderNavigationTarget) => Promise<void>;
+  open: (
+    source: File,
+    container: HTMLElement,
+    initialLocator?: ReaderLocator,
+  ) => Promise<ReaderPublication>;
+  goTo: (target: ReaderNavigationTarget, locator?: ReaderLocator) => Promise<void>;
+  setNavigationState: (state: ReaderNavigationState) => void;
   subscribe: (listener: (event: ReaderEngineEvent) => void) => () => void;
   destroy: () => void;
 }

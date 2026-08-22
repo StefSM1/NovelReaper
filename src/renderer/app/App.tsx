@@ -7,6 +7,11 @@ import {
   type SelectedPublication,
 } from '../../platform/contracts';
 import {
+  browserProgressStorageKey,
+  BrowserProgressStore,
+  DebouncedProgressWriter,
+} from '../../platform/browser/browser-progress-store';
+import {
   readerErrorMessage,
   type ReaderEngine,
   type ReaderEngineFactory,
@@ -14,6 +19,14 @@ import {
   type ReaderRelocation,
   type ReaderTocItem,
 } from '../../reader/contracts';
+import { navigationErrorMessage, ReaderNavigationService } from '../../reader/navigation-service';
+import {
+  chapterProgressState,
+  createReaderProgress,
+  overallProgress,
+  storedReaderProgress,
+  type ReaderProgressState,
+} from '../../reader/progress-state';
 import type { ReaderStateSnapshot } from '../../shared/contracts/ipc';
 
 const INITIAL_READER_STATE: ReaderStateSnapshot = {
@@ -44,10 +57,12 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
   const readerFrameRef = useRef<HTMLDivElement>(null);
   const browserReaderHostRef = useRef<HTMLDivElement>(null);
   const browserReaderEngineRef = useRef<ReaderEngine | undefined>(undefined);
+  const navigationServiceRef = useRef<ReaderNavigationService | undefined>(undefined);
   const [readerState, setReaderState] = useState(INITIAL_READER_STATE);
   const [publication, setPublication] = useState<PublicationDescriptor | SelectedPublication>();
   const [parsedPublication, setParsedPublication] = useState<ReaderPublication>();
   const [readerLocation, setReaderLocation] = useState<ReaderRelocation>();
+  const [readerProgress, setReaderProgress] = useState<ReaderProgressState>();
   const [browserReaderStatus, setBrowserReaderStatus] = useState<BrowserReaderStatus>('idle');
   const [readerError, setReaderError] = useState<string>();
   const [isNavigating, setIsNavigating] = useState(false);
@@ -101,24 +116,86 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
     const source = publication.file;
     const engine = readerEngineFactory();
     const host = browserReaderHostRef.current;
+    let storage: Storage | undefined;
+    try {
+      storage = window.localStorage;
+    } catch {
+      storage = undefined;
+    }
+    const progressStore = new BrowserProgressStore(storage, browserProgressStorageKey(publication));
+    const savedProgress = progressStore.load();
+    const progressLoadWarning = progressStore.takeLoadWarning();
+    const initialLocator = savedProgress?.positions[String(savedProgress.currentSpineIndex)];
+    let saveWarningShown = false;
+    const progressWriter = new DebouncedProgressWriter(progressStore, () => {
+      if (saveWarningShown) return;
+      saveWarningShown = true;
+      setNotices((current) => [
+        ...current,
+        'Reading progress could not be saved in this browser session.',
+      ]);
+    });
     let active = true;
+    let pendingLocation: ReaderRelocation | undefined;
     browserReaderEngineRef.current?.destroy();
     browserReaderEngineRef.current = engine;
+    navigationServiceRef.current = undefined;
     setParsedPublication(undefined);
     setReaderLocation(undefined);
+    setReaderProgress(undefined);
     setReaderError(undefined);
     setBrowserReaderStatus('opening');
 
     const unsubscribe = engine.subscribe((event) => {
       if (!active) return;
-      if (event.type === 'relocation') setReaderLocation(event.location);
-      else setReaderError(event.message);
+      if (event.type === 'relocation') {
+        pendingLocation = event.location;
+        setReaderLocation(event.location);
+        navigationServiceRef.current?.relocate(event.location);
+      } else if (event.type === 'navigation-request') {
+        void navigationServiceRef.current?.navigate(event.request).catch((error: unknown) => {
+          setReaderError(navigationErrorMessage(error));
+        });
+      } else setReaderError(event.message);
     });
 
+    const flushProgress = (): void => navigationServiceRef.current?.flush();
+    const flushWhenHidden = (): void => {
+      if (document.visibilityState === 'hidden') flushProgress();
+    };
+    window.addEventListener('pagehide', flushProgress);
+    document.addEventListener('visibilitychange', flushWhenHidden);
+
     void engine
-      .open(source, host)
+      .open(source, host, initialLocator)
       .then((book) => {
         if (!active) return;
+        if (progressLoadWarning) {
+          setNotices((current) =>
+            current.includes(progressLoadWarning) ? current : [...current, progressLoadWarning],
+          );
+        }
+        const initialProgress = createReaderProgress(
+          book.linearSpineIndices,
+          savedProgress,
+          pendingLocation,
+        );
+        const navigationService = new ReaderNavigationService({
+          engine,
+          initialState: initialProgress,
+          onState: (progress, location) => {
+            if (!active) return;
+            setReaderProgress(progress);
+            if (location) setReaderLocation(location);
+            progressWriter.schedule(storedReaderProgress(progress));
+          },
+          onBusy: (busy) => {
+            if (active) setIsNavigating(busy);
+          },
+          flush: (progress) => progressWriter.flush(progress),
+        });
+        navigationServiceRef.current = navigationService;
+        setReaderProgress(initialProgress);
         setParsedPublication(book);
         setBrowserReaderStatus('ready');
       })
@@ -130,9 +207,14 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
 
     return () => {
       active = false;
+      window.removeEventListener('pagehide', flushProgress);
+      document.removeEventListener('visibilitychange', flushWhenHidden);
+      navigationServiceRef.current?.flush();
+      progressWriter.dispose();
       unsubscribe();
       engine.destroy();
       if (browserReaderEngineRef.current === engine) browserReaderEngineRef.current = undefined;
+      navigationServiceRef.current = undefined;
     };
   }, [publication, readerAttempt, readerEngineFactory]);
 
@@ -200,16 +282,16 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
   };
 
   const openTocItem = async (item: ReaderTocItem): Promise<void> => {
-    const engine = browserReaderEngineRef.current;
-    if (!engine || isNavigating) return;
-    setIsNavigating(true);
+    const navigation = navigationServiceRef.current;
+    if (!navigation || isNavigating) return;
     setReaderError(undefined);
     try {
-      await engine.goTo(item.target);
+      await navigation.navigate({
+        source: 'contents',
+        target: item.target,
+      });
     } catch (error) {
-      setReaderError(readerErrorMessage(error));
-    } finally {
-      setIsNavigating(false);
+      setReaderError(navigationErrorMessage(error));
     }
   };
 
@@ -283,7 +365,12 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
                         className={
                           readerLocation?.activeTocId === item.id
                             ? 'toc__item toc__item--active'
-                            : 'toc__item'
+                            : item.spineIndex !== undefined &&
+                                readerProgress &&
+                                chapterProgressState(readerProgress, item.spineIndex) ===
+                                  'completed'
+                              ? 'toc__item toc__item--completed'
+                              : 'toc__item'
                         }
                         style={
                           {
@@ -504,14 +591,14 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
           </p>
 
           <section className="environment-card" aria-label="Preview environment">
-            <span className="environment-card__number">B2</span>
+            <span className="environment-card__number">B3</span>
             <div>
               <strong>{isBrowserPreview ? 'Strict EPUB reader' : 'Electron adapter'}</strong>
               <p>
                 {isBrowserPreview
                   ? parsedPublication
-                    ? `${parsedPublication.spineLength.toLocaleString()} spine sections`
-                    : 'Metadata · TOC · chapters'
+                    ? `${parsedPublication.spineLength.toLocaleString()} sections · progress active`
+                    : 'Navigation · locators · progress'
                   : 'Typed preload IPC'}
               </p>
             </div>
@@ -525,18 +612,18 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
                 <p>No upload or managed copy.</p>
               </div>
             </li>
-            <li className="phase-steps__active">
+            <li>
               <span>02</span>
               <div>
                 <strong>Read locally</strong>
                 <p>Metadata, TOC, and one chapter at a time.</p>
               </div>
             </li>
-            <li>
+            <li className="phase-steps__active">
               <span>03</span>
               <div>
-                <strong>Navigate in B3</strong>
-                <p>Progress, restore, and end controls.</p>
+                <strong>Navigate and resume</strong>
+                <p>Progress, restoration, and end controls.</p>
               </div>
             </li>
           </ol>
@@ -551,8 +638,13 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
 
       <footer className="statusbar">
         <span>Environment: {isBrowserPreview ? 'Browser' : 'Electron'}</span>
+        <span>
+          Overall: {readerProgress ? `${Math.round(overallProgress(readerProgress) * 100)}%` : '—'}
+        </span>
+        <span>
+          Chapter: {readerLocation ? `${Math.round(readerLocation.fractionInChapter * 100)}%` : '—'}
+        </span>
         <span>Source: {publicationStatus}</span>
-        <span>Reader engine: {isBrowserPreview ? browserReaderStatus : readerState.status}</span>
       </footer>
 
       {bootstrapError ? (

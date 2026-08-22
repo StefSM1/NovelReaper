@@ -1,10 +1,13 @@
 import type { FoliateBook } from 'foliate-js/view.js';
+import * as CFI from 'foliate-js/epubcfi.js';
 
 import {
   ReaderEngineError,
   type ReaderEngine,
   type ReaderEngineEvent,
   type ReaderEngineFactory,
+  type ReaderLocator,
+  type ReaderNavigationState,
   type ReaderNavigationTarget,
   type ReaderPublication,
   type ReaderRelocation,
@@ -30,6 +33,39 @@ const READING_STYLE = `
   h1, h2, h3, h4 { color: #1f2826 !important; line-height: 1.25 !important; }
   p { margin-block: 0 1.35em; }
   img, svg, video { max-width: 100% !important; height: auto !important; }
+  .novelreaper-chapter-navigation {
+    display: flex;
+    gap: 1rem;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 4.5rem;
+    padding-top: 2rem;
+    border-top: 1px solid #d9cdbf;
+  }
+  .novelreaper-chapter-navigation button {
+    min-width: 12rem;
+    min-height: 3rem;
+    padding: 0.75rem 1.15rem;
+    color: #202725;
+    background: #fffdf7;
+    border: 1.5px solid #8f918d;
+    border-radius: 6px;
+    font: 600 0.9rem/1.2 system-ui, sans-serif;
+    cursor: pointer;
+  }
+  .novelreaper-chapter-navigation button:last-child {
+    color: #fffdf7;
+    background: #1f5b49;
+    border-color: #1f5b49;
+  }
+  .novelreaper-chapter-navigation button:disabled {
+    cursor: default;
+    opacity: 0.48;
+  }
+  @media (max-width: 34rem) {
+    .novelreaper-chapter-navigation { align-items: stretch; flex-direction: column; }
+    .novelreaper-chapter-navigation button { width: 100%; }
+  }
 `;
 
 function boundedLabel(value: unknown): string | undefined {
@@ -72,15 +108,23 @@ export class FoliateReaderEngine implements ReaderEngine {
   private publication: ReaderPublication | undefined;
   private coverUrl: string | undefined;
   private activeSectionIndex: number | undefined;
+  private navigationState: ReaderNavigationState = { busy: false, finished: false };
+  private lastLocation: ReaderLocator | undefined;
+  private layoutObserver: ResizeObserver | undefined;
   private displayGeneration = 0;
   private scrollFrame = 0;
+  private resizeTimer = 0;
 
   public subscribe(listener: (event: ReaderEngineEvent) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
 
-  public async open(source: File, container: HTMLElement): Promise<ReaderPublication> {
+  public async open(
+    source: File,
+    container: HTMLElement,
+    initialLocator?: ReaderLocator,
+  ): Promise<ReaderPublication> {
     this.destroy();
     this.container = container;
     let packageParsed = false;
@@ -113,7 +157,18 @@ export class FoliateReaderEngine implements ReaderEngine {
       const cover = await this.createCoverUrl(book);
       if (cover) metadata.coverUrl = cover;
       const toc = tocFromBook(book);
-      this.publication = { metadata, toc, spineLength: book.sections.length };
+      const declaredLinearSpineIndices = book.sections
+        .map((section, index) => (section.linear === 'no' ? undefined : index))
+        .filter((index): index is number => index !== undefined);
+      const linearSpineIndices = declaredLinearSpineIndices.length
+        ? declaredLinearSpineIndices
+        : book.sections.map((_section, index) => index);
+      this.publication = {
+        metadata,
+        toc,
+        spineLength: book.sections.length,
+        linearSpineIndices,
+      };
 
       const frame = document.createElement('iframe');
       frame.className = 'strict-reader-frame';
@@ -128,7 +183,11 @@ export class FoliateReaderEngine implements ReaderEngine {
         toc.find((item) => item.spineIndex !== undefined)?.spineIndex ??
           book.sections.findIndex((section) => section.linear !== 'no'),
       );
-      await this.displaySection(firstLinear);
+      const initialIndex =
+        initialLocator && linearSpineIndices.includes(initialLocator.spineIndex)
+          ? initialLocator.spineIndex
+          : firstLinear;
+      await this.displaySection(initialIndex, undefined, initialLocator);
       return this.publication;
     } catch (error) {
       const mappedError = mapOpenError(error);
@@ -143,7 +202,7 @@ export class FoliateReaderEngine implements ReaderEngine {
     }
   }
 
-  public async goTo(target: ReaderNavigationTarget): Promise<void> {
+  public async goTo(target: ReaderNavigationTarget, locator?: ReaderLocator): Promise<void> {
     if (!this.book || !this.publication) {
       throw new ReaderEngineError('NAVIGATION_FAILED', 'Open an EPUB before choosing a chapter.');
     }
@@ -166,8 +225,13 @@ export class FoliateReaderEngine implements ReaderEngine {
     }
 
     try {
-      if (index !== this.activeSectionIndex) await this.displaySection(index, target);
-      else this.scrollToTarget(target);
+      if (index !== this.activeSectionIndex) await this.displaySection(index, target, locator);
+      else {
+        await this.settleFrameLayout();
+        if (locator) this.scrollToLocator(locator);
+        else this.scrollToTarget(target);
+        this.emitRelocation(index);
+      }
     } catch {
       throw new ReaderEngineError(
         'NAVIGATION_FAILED',
@@ -176,10 +240,17 @@ export class FoliateReaderEngine implements ReaderEngine {
     }
   }
 
+  public setNavigationState(state: ReaderNavigationState): void {
+    this.navigationState = state;
+    if (this.activeSectionIndex !== undefined) this.installChapterNavigation();
+  }
+
   public destroy(): void {
     this.displayGeneration += 1;
     if (this.scrollFrame) cancelAnimationFrame(this.scrollFrame);
     this.scrollFrame = 0;
+    if (this.resizeTimer) window.clearTimeout(this.resizeTimer);
+    this.resizeTimer = 0;
     this.detachFrameDocument();
     this.frame?.remove();
     this.frame = undefined;
@@ -195,9 +266,15 @@ export class FoliateReaderEngine implements ReaderEngine {
     this.container?.replaceChildren();
     this.container = undefined;
     this.publication = undefined;
+    this.navigationState = { busy: false, finished: false };
+    this.lastLocation = undefined;
   }
 
-  private async displaySection(index: number, target?: ReaderNavigationTarget): Promise<void> {
+  private async displaySection(
+    index: number,
+    target?: ReaderNavigationTarget,
+    locator?: ReaderLocator,
+  ): Promise<void> {
     const book = this.book;
     const frame = this.frame;
     const section = book?.sections[index];
@@ -219,10 +296,14 @@ export class FoliateReaderEngine implements ReaderEngine {
 
       const previousIndex = this.activeSectionIndex;
       this.activeSectionIndex = index;
+      this.lastLocation = undefined;
       if (previousIndex !== undefined && previousIndex !== index)
         book.sections[previousIndex]?.unload();
       this.attachFrameDocument(index);
-      this.scrollToTarget(target);
+      this.installChapterNavigation();
+      await this.settleFrameLayout();
+      if (locator?.spineIndex === index) this.scrollToLocator(locator);
+      else this.scrollToTarget(target);
       this.emitRelocation(index);
     } catch (error) {
       section.unload();
@@ -260,6 +341,9 @@ export class FoliateReaderEngine implements ReaderEngine {
     if (!document) throw new Error('Chapter document is unavailable.');
     document.addEventListener('click', this.onChapterClick, true);
     document.defaultView?.addEventListener('scroll', this.onChapterScroll, { passive: true });
+    document.defaultView?.addEventListener('resize', this.onChapterResize, { passive: true });
+    this.layoutObserver = new ResizeObserver(this.onChapterResize);
+    this.layoutObserver.observe(document.body);
     document.documentElement.dataset.novelReaperSpineIndex = String(index);
   }
 
@@ -267,10 +351,26 @@ export class FoliateReaderEngine implements ReaderEngine {
     const document = this.frame?.contentDocument;
     document?.removeEventListener('click', this.onChapterClick, true);
     document?.defaultView?.removeEventListener('scroll', this.onChapterScroll);
+    document?.defaultView?.removeEventListener('resize', this.onChapterResize);
+    this.layoutObserver?.disconnect();
+    this.layoutObserver = undefined;
   }
 
   private readonly onChapterClick = (event: MouseEvent): void => {
     const target = event.target;
+    const navigationButton =
+      target instanceof Element
+        ? target.closest<HTMLButtonElement>('button[data-novelreaper-action]')
+        : null;
+    if (navigationButton) {
+      event.preventDefault();
+      if (navigationButton.disabled || this.navigationState.busy) return;
+      const action = navigationButton.dataset.novelreaperAction;
+      if (action === 'previous' || action === 'next' || action === 'finish') {
+        this.emit({ type: 'navigation-request', request: { source: action } });
+      }
+      return;
+    }
     const anchor = target instanceof Element ? target.closest('a[href]') : null;
     if (!anchor) return;
     event.preventDefault();
@@ -281,12 +381,9 @@ export class FoliateReaderEngine implements ReaderEngine {
         ? undefined
         : this.book?.sections[this.activeSectionIndex];
     const resolved = section?.resolveHref?.(href) ?? href;
-    void this.goTo(resolved).catch(() => {
-      this.emit({
-        type: 'error',
-        message: 'That internal book link could not be opened.',
-        recoverable: true,
-      });
+    this.emit({
+      type: 'navigation-request',
+      request: { source: 'internal', target: resolved },
     });
   };
 
@@ -298,6 +395,18 @@ export class FoliateReaderEngine implements ReaderEngine {
     });
   };
 
+  private readonly onChapterResize = (): void => {
+    if (!this.lastLocation || this.lastLocation.spineIndex !== this.activeSectionIndex) return;
+    if (this.resizeTimer) window.clearTimeout(this.resizeTimer);
+    this.resizeTimer = window.setTimeout(() => {
+      this.resizeTimer = 0;
+      const location = this.lastLocation;
+      if (!location || location.spineIndex !== this.activeSectionIndex) return;
+      this.scrollToLocator(location);
+      this.emitRelocation(location.spineIndex);
+    }, 120);
+  };
+
   private scrollToTarget(target?: ReaderNavigationTarget): void {
     const document = this.frame?.contentDocument;
     const view = document?.defaultView;
@@ -305,6 +414,159 @@ export class FoliateReaderEngine implements ReaderEngine {
     const fragment = typeof target === 'string' ? target.split('#')[1] : undefined;
     if (fragment) document.getElementById(decodeURIComponent(fragment))?.scrollIntoView();
     else view.scrollTo({ top: 0, behavior: 'instant' });
+  }
+
+  private scrollToLocator(locator: ReaderLocator): void {
+    const document = this.frame?.contentDocument;
+    const view = document?.defaultView;
+    const root = document?.scrollingElement;
+    if (!document || !view || !root) return;
+    if (locator.cfi && this.restoreCfi(document, locator.cfi)) return;
+    if (locator.textQuote && this.restoreTextQuote(document, locator.textQuote)) return;
+    const distance = Math.max(0, root.scrollHeight - root.clientHeight);
+    view.scrollTo({
+      top: Math.round(distance * Math.min(1, Math.max(0, locator.fractionInChapter))),
+      behavior: 'instant',
+    });
+  }
+
+  private restoreCfi(document: Document, cfi: string): boolean {
+    try {
+      const view = document.defaultView;
+      if (!view) return false;
+      const resolved = this.book?.resolveCFI?.(cfi);
+      if (!resolved || resolved.index !== this.activeSectionIndex || !resolved.anchor) return false;
+      const anchor = resolved.anchor(document);
+      if (anchor instanceof view.Element) {
+        anchor.scrollIntoView({ block: 'start', behavior: 'instant' });
+        return true;
+      }
+      if (anchor instanceof view.Range) {
+        const element =
+          anchor.startContainer.nodeType === Node.ELEMENT_NODE
+            ? (anchor.startContainer as Element)
+            : anchor.startContainer.parentElement;
+        element?.scrollIntoView({ block: 'start', behavior: 'instant' });
+        return Boolean(element);
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
+  private restoreTextQuote(document: Document, textQuote: string): boolean {
+    const quote = textQuote.replace(/\s+/g, ' ').trim();
+    if (!quote) return false;
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const normalized = node.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+      if (!normalized.includes(quote)) continue;
+      node.parentElement?.scrollIntoView({ block: 'start', behavior: 'instant' });
+      return true;
+    }
+    return false;
+  }
+
+  private captureTextQuote(document: Document): string | undefined {
+    const view = document.defaultView;
+    if (!view) return undefined;
+    const caretDocument = document as Document & {
+      caretPositionFromPoint?: (
+        x: number,
+        y: number,
+      ) => { offsetNode: Node; offset: number } | null;
+    };
+    const position = caretDocument.caretPositionFromPoint?.(
+      Math.max(8, view.innerWidth / 2),
+      Math.max(24, view.innerHeight * 0.28),
+    );
+    if (position?.offsetNode.nodeType === Node.TEXT_NODE) {
+      const text = position.offsetNode.textContent ?? '';
+      const start = Math.max(0, position.offset - 60);
+      const quote = text
+        .slice(start, start + 180)
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (quote) return [...quote].slice(0, 180).join('');
+    }
+
+    const visible = [...document.body.querySelectorAll('p, li, blockquote, h1, h2, h3')].find(
+      (element) => {
+        const rect = element.getBoundingClientRect();
+        return rect.bottom >= 0 && rect.top <= view.innerHeight;
+      },
+    );
+    const quote = visible?.textContent?.replace(/\s+/g, ' ').trim();
+    return quote ? [...quote].slice(0, 180).join('') : undefined;
+  }
+
+  private captureCfi(document: Document, index: number): string | undefined {
+    const view = document.defaultView;
+    const base = this.book?.sections[index]?.cfi;
+    if (!view || !base) return undefined;
+    const caretDocument = document as Document & {
+      caretPositionFromPoint?: (
+        x: number,
+        y: number,
+      ) => { offsetNode: Node; offset: number } | null;
+    };
+    const position = caretDocument.caretPositionFromPoint?.(
+      Math.max(8, view.innerWidth / 2),
+      Math.max(24, view.innerHeight * 0.28),
+    );
+    if (!position?.offsetNode) return base;
+    try {
+      const range = document.createRange();
+      const maximum = position.offsetNode.textContent?.length ?? 0;
+      range.setStart(position.offsetNode, Math.min(maximum, Math.max(0, position.offset)));
+      range.collapse(true);
+      return CFI.joinIndir(base, CFI.fromRange(range));
+    } catch {
+      return base;
+    }
+  }
+
+  private settleFrameLayout(): Promise<void> {
+    const view = this.frame?.contentWindow;
+    if (!view) return Promise.resolve();
+    return new Promise((resolve) => {
+      view.requestAnimationFrame(() => view.requestAnimationFrame(() => resolve()));
+    });
+  }
+
+  private installChapterNavigation(): void {
+    const document = this.frame?.contentDocument;
+    const publication = this.publication;
+    const activeIndex = this.activeSectionIndex;
+    if (!document?.body || !publication || activeIndex === undefined) return;
+    document.querySelector('.novelreaper-chapter-navigation')?.remove();
+
+    const position = publication.linearSpineIndices.indexOf(activeIndex);
+    if (position < 0) return;
+    const footer = document.createElement('nav');
+    footer.className = 'novelreaper-chapter-navigation';
+    footer.setAttribute('aria-label', 'Chapter navigation');
+
+    const previous = document.createElement('button');
+    previous.type = 'button';
+    previous.dataset.novelreaperAction = 'previous';
+    previous.textContent = '< Previous Chapter';
+    previous.disabled = this.navigationState.busy || position === 0;
+
+    const next = document.createElement('button');
+    next.type = 'button';
+    const isFinal = position === publication.linearSpineIndices.length - 1;
+    next.dataset.novelreaperAction = isFinal ? 'finish' : 'next';
+    next.textContent = isFinal
+      ? this.navigationState.finished
+        ? 'Book Finished'
+        : 'Finish Book'
+      : 'Next Chapter >';
+    next.disabled = this.navigationState.busy || (isFinal && this.navigationState.finished);
+
+    footer.append(previous, next);
+    document.body.append(footer);
   }
 
   private emitRelocation(index: number): void {
@@ -317,12 +579,18 @@ export class FoliateReaderEngine implements ReaderEngine {
     const chapterLabel = boundedLabel(
       this.publication.toc.find((item) => item.id === currentTocId)?.label,
     );
+    const textQuote = this.captureTextQuote(document);
+    const cfi = this.captureCfi(document, index);
     const location: ReaderRelocation = {
       spineIndex: index,
+      href: this.book?.sections[index]?.id ?? `spine:${index}`,
       fractionInChapter: fraction,
+      ...(cfi ? { cfi } : {}),
+      ...(textQuote ? { textQuote } : {}),
       ...(chapterLabel ? { chapterLabel } : {}),
       ...(currentTocId ? { activeTocId: currentTocId } : {}),
     };
+    this.lastLocation = location;
     this.emit({ type: 'relocation', location });
   }
 

@@ -14,12 +14,16 @@ declare module 'foliate-js/view.js' {
     resolveHref?: (
       href: string,
     ) => { index?: number; anchor?: (document: Document) => unknown } | null;
+    resolveCFI?: (
+      cfi: string,
+    ) => { index?: number; anchor?: (document: Document) => unknown } | null;
     getCover?: () => Promise<Blob | null>;
     destroy?: () => void;
   }
 
   export interface FoliateSection {
     id?: string;
+    cfi?: string;
     linear?: string;
     load: () => Promise<string | null>;
     unload: () => void;
@@ -41,4 +45,9 @@ declare module 'foliate-js/view.js' {
   }
 
   export function makeBook(file: File | Blob | string): Promise<FoliateBook>;
+}
+
+declare module 'foliate-js/epubcfi.js' {
+  export function fromRange(range: Range): string;
+  export function joinIndir(base: string, local: string): string;
 }

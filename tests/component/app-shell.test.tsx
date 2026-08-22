@@ -28,9 +28,14 @@ const PARSED_BOOK: ReaderPublication = {
     { id: 'toc-1', label: 'Second Chapter', target: 'text/two.xhtml', depth: 0, spineIndex: 1 },
   ],
   spineLength: 2,
+  linearSpineIndices: [0, 1],
 };
 
-function createReaderEngine(options?: { openError?: Error }): ReaderEngine {
+interface FakeReaderEngine extends ReaderEngine {
+  publish: (event: ReaderEngineEvent) => void;
+}
+
+function createReaderEngine(options?: { openError?: Error }): FakeReaderEngine {
   let listener: ((event: ReaderEngineEvent) => void) | undefined;
   return {
     open: vi.fn((_source, container) => {
@@ -40,19 +45,30 @@ function createReaderEngine(options?: { openError?: Error }): ReaderEngine {
       container.replaceChildren(surface);
       listener?.({
         type: 'relocation',
-        location: { spineIndex: 0, fractionInChapter: 0, activeTocId: 'toc-0' },
+        location: {
+          spineIndex: 0,
+          href: 'text/opening.xhtml',
+          fractionInChapter: 0,
+          activeTocId: 'toc-0',
+        },
       });
       return Promise.resolve(PARSED_BOOK);
     }),
     goTo: vi.fn((target) => {
-      if (target === 'text/two.xhtml') {
+      if (target === 'text/two.xhtml' || target === 1) {
         listener?.({
           type: 'relocation',
-          location: { spineIndex: 1, fractionInChapter: 0, activeTocId: 'toc-1' },
+          location: {
+            spineIndex: 1,
+            href: 'text/two.xhtml',
+            fractionInChapter: 0,
+            activeTocId: 'toc-1',
+          },
         });
       }
       return Promise.resolve();
     }),
+    setNavigationState: vi.fn(),
     subscribe: vi.fn((nextListener) => {
       listener = nextListener;
       return () => {
@@ -60,6 +76,7 @@ function createReaderEngine(options?: { openError?: Error }): ReaderEngine {
       };
     }),
     destroy: vi.fn(),
+    publish: (event) => listener?.(event),
   };
 }
 
@@ -175,7 +192,42 @@ describe('shared NovelReaper application shell', () => {
       'aria-current',
       'location',
     );
+    expect(screen.getByText('Overall: 0%')).toBeVisible();
     expect(platform.selectPublication).toHaveBeenCalledOnce();
+  });
+
+  it('completes only through Next and Finish navigation requests', async () => {
+    const user = userEvent.setup();
+    const file = new File([new Uint8Array([0x50, 0x4b, 0x03, 0x04])], 'Calm.epub', {
+      type: 'application/epub+zip',
+      lastModified: 1_700_000_000_000,
+    });
+    const platform = createPlatform({
+      environment: 'browser-preview',
+      selection: {
+        status: 'selected',
+        publication: {
+          id: 'f4cc55dc-c548-4780-b384-0c663bfdb14f',
+          displayName: file.name,
+          fileSize: file.size,
+          lastModified: file.lastModified,
+          mimeType: file.type,
+          availability: 'selected',
+          file,
+        },
+      },
+    });
+    const engine = createReaderEngine();
+    render(<App platform={platform} readerEngineFactory={() => engine} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Open EPUB' }));
+    expect(await screen.findByRole('heading', { name: 'Calm Book' })).toBeVisible();
+    act(() => engine.publish({ type: 'navigation-request', request: { source: 'next' } }));
+
+    expect(engine.goTo).toHaveBeenCalledWith(1);
+    expect(await screen.findByText('Overall: 50%')).toBeVisible();
+    act(() => engine.publish({ type: 'navigation-request', request: { source: 'finish' } }));
+    expect(await screen.findByText('Overall: 100%')).toBeVisible();
   });
 
   it('surfaces browser selection errors without replacing the existing shell state', async () => {
