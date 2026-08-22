@@ -29,6 +29,7 @@ Desktop.ini
 !tests/fixtures/public/*.epub
 !tests/fixtures/synthetic/*.epub
 !tests/fixtures/malicious/*.epub
+EPUBs/
 
 # Plans
 NovelReaper_IMPLEMENTATION_PLAN.md

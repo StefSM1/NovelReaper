@@ -12,6 +12,7 @@ import {
   type ReaderPublication,
   type ReaderRelocation,
 } from './contracts';
+import { closestFrameElement } from './frame-events';
 import { activeTocId, metadataFromBook, tocFromBook } from './publication-model';
 import { installStrictPublicationPolicy, sanitizeStrictMarkup } from './strict-policy';
 
@@ -358,10 +359,10 @@ export class FoliateReaderEngine implements ReaderEngine {
 
   private readonly onChapterClick = (event: MouseEvent): void => {
     const target = event.target;
-    const navigationButton =
-      target instanceof Element
-        ? target.closest<HTMLButtonElement>('button[data-novelreaper-action]')
-        : null;
+    const navigationButton = closestFrameElement<HTMLButtonElement>(
+      target,
+      'button[data-novelreaper-action]',
+    );
     if (navigationButton) {
       event.preventDefault();
       if (navigationButton.disabled || this.navigationState.busy) return;
@@ -371,7 +372,7 @@ export class FoliateReaderEngine implements ReaderEngine {
       }
       return;
     }
-    const anchor = target instanceof Element ? target.closest('a[href]') : null;
+    const anchor = closestFrameElement<HTMLAnchorElement>(target, 'a[href]');
     if (!anchor) return;
     event.preventDefault();
     const href = anchor.getAttribute('href');
