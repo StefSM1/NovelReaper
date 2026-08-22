@@ -1,7 +1,8 @@
 import { createBrowserPlatform } from '../platform/browser/browser-platform';
+import { createFoliateReaderEngine } from '../reader/FoliateReaderEngine';
 import { renderNovelReaper } from '../renderer/render-app';
 
 const rootElement = document.getElementById('root');
 if (!rootElement) throw new Error('NovelReaper browser-preview root is missing.');
 
-renderNovelReaper(rootElement, createBrowserPlatform());
+renderNovelReaper(rootElement, createBrowserPlatform(), createFoliateReaderEngine);

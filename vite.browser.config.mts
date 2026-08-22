@@ -1,12 +1,33 @@
 import { resolve } from 'node:path';
 
 import react from '@vitejs/plugin-react';
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
+
+function foliateEpubOnlyCompatibility(): Plugin {
+  const virtualPdfModule = '\0novelreaper:foliate-pdf-disabled';
+  return {
+    name: 'novelreaper-foliate-epub-only',
+    enforce: 'pre',
+    resolveId(source: string, importer: string | undefined) {
+      if (
+        source === './pdf.js' &&
+        importer?.replaceAll('\\', '/').endsWith('/foliate-js/view.js')
+      ) {
+        return virtualPdfModule;
+      }
+      return null;
+    },
+    load(id) {
+      if (id !== virtualPdfModule) return null;
+      return 'export async function makePDF() { throw new Error("PDF is outside NovelReaper v1."); }';
+    },
+  };
+}
 
 export default defineConfig({
   root: resolve(import.meta.dirname, 'src/browser-preview'),
   base: './',
-  plugins: [react()],
+  plugins: [foliateEpubOnlyCompatibility(), react()],
   server: {
     host: '127.0.0.1',
     port: 5173,

@@ -4,7 +4,16 @@ import {
   platformErrorMessage,
   type NovelReaperPlatform,
   type PublicationDescriptor,
+  type SelectedPublication,
 } from '../../platform/contracts';
+import {
+  readerErrorMessage,
+  type ReaderEngine,
+  type ReaderEngineFactory,
+  type ReaderPublication,
+  type ReaderRelocation,
+  type ReaderTocItem,
+} from '../../reader/contracts';
 import type { ReaderStateSnapshot } from '../../shared/contracts/ipc';
 
 const INITIAL_READER_STATE: ReaderStateSnapshot = {
@@ -15,6 +24,7 @@ const INITIAL_READER_STATE: ReaderStateSnapshot = {
 
 interface AppProps {
   platform: NovelReaperPlatform;
+  readerEngineFactory?: ReaderEngineFactory | undefined;
 }
 
 function formatFileSize(bytes: number): string {
@@ -28,10 +38,20 @@ function formatDate(timestamp: number): string {
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(timestamp);
 }
 
-export function App({ platform }: AppProps): React.JSX.Element {
+type BrowserReaderStatus = 'idle' | 'opening' | 'ready' | 'error';
+
+export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Element {
   const readerFrameRef = useRef<HTMLDivElement>(null);
+  const browserReaderHostRef = useRef<HTMLDivElement>(null);
+  const browserReaderEngineRef = useRef<ReaderEngine | undefined>(undefined);
   const [readerState, setReaderState] = useState(INITIAL_READER_STATE);
-  const [publication, setPublication] = useState<PublicationDescriptor>();
+  const [publication, setPublication] = useState<PublicationDescriptor | SelectedPublication>();
+  const [parsedPublication, setParsedPublication] = useState<ReaderPublication>();
+  const [readerLocation, setReaderLocation] = useState<ReaderRelocation>();
+  const [browserReaderStatus, setBrowserReaderStatus] = useState<BrowserReaderStatus>('idle');
+  const [readerError, setReaderError] = useState<string>();
+  const [isNavigating, setIsNavigating] = useState(false);
+  const [readerAttempt, setReaderAttempt] = useState(0);
   const [isFocusMode, setIsFocusMode] = useState(false);
   const [isBootstrapping, setIsBootstrapping] = useState(true);
   const [isSelecting, setIsSelecting] = useState(false);
@@ -67,6 +87,54 @@ export function App({ platform }: AppProps): React.JSX.Element {
       unsubscribeExitFocus();
     };
   }, [platform]);
+
+  useEffect(() => {
+    if (
+      publication?.availability !== 'selected' ||
+      !('file' in publication) ||
+      !readerEngineFactory ||
+      !browserReaderHostRef.current
+    ) {
+      return;
+    }
+
+    const source = publication.file;
+    const engine = readerEngineFactory();
+    const host = browserReaderHostRef.current;
+    let active = true;
+    browserReaderEngineRef.current?.destroy();
+    browserReaderEngineRef.current = engine;
+    setParsedPublication(undefined);
+    setReaderLocation(undefined);
+    setReaderError(undefined);
+    setBrowserReaderStatus('opening');
+
+    const unsubscribe = engine.subscribe((event) => {
+      if (!active) return;
+      if (event.type === 'relocation') setReaderLocation(event.location);
+      else setReaderError(event.message);
+    });
+
+    void engine
+      .open(source, host)
+      .then((book) => {
+        if (!active) return;
+        setParsedPublication(book);
+        setBrowserReaderStatus('ready');
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        setReaderError(readerErrorMessage(error));
+        setBrowserReaderStatus('error');
+      });
+
+    return () => {
+      active = false;
+      unsubscribe();
+      engine.destroy();
+      if (browserReaderEngineRef.current === engine) browserReaderEngineRef.current = undefined;
+    };
+  }, [publication, readerAttempt, readerEngineFactory]);
 
   useEffect(() => {
     const handleEscape = (event: KeyboardEvent): void => {
@@ -116,6 +184,7 @@ export function App({ platform }: AppProps): React.JSX.Element {
     try {
       const result = await platform.selectPublication();
       if (result.status === 'selected') {
+        browserReaderEngineRef.current?.destroy();
         setPublication(result.publication);
         const warning = result.warning;
         if (warning) {
@@ -127,6 +196,20 @@ export function App({ platform }: AppProps): React.JSX.Element {
       setOperationError(platformErrorMessage(error));
     } finally {
       setIsSelecting(false);
+    }
+  };
+
+  const openTocItem = async (item: ReaderTocItem): Promise<void> => {
+    const engine = browserReaderEngineRef.current;
+    if (!engine || isNavigating) return;
+    setIsNavigating(true);
+    setReaderError(undefined);
+    try {
+      await engine.goTo(item.target);
+    } catch (error) {
+      setReaderError(readerErrorMessage(error));
+    } finally {
+      setIsNavigating(false);
     }
   };
 
@@ -175,13 +258,54 @@ export function App({ platform }: AppProps): React.JSX.Element {
       <main className="shell-content">
         <aside className="shell-panel shell-panel--contents" aria-label="Contents preview">
           <p className="eyebrow">Contents</p>
-          <h2>Library preview</h2>
+          <h2>{parsedPublication?.metadata.title ?? 'Library preview'}</h2>
           <p className="panel-intro">
-            Select an EPUB from this computer. Browser Phase B1 validates it locally and remembers
-            metadata—not the source path.
+            {parsedPublication?.metadata.author
+              ? parsedPublication.metadata.author
+              : 'Select a local EPUB to read it chapter by chapter in Strict mode.'}
           </p>
 
-          {publication ? (
+          {parsedPublication ? (
+            <>
+              {parsedPublication.metadata.coverUrl ? (
+                <img
+                  className="publication-cover"
+                  src={parsedPublication.metadata.coverUrl}
+                  alt=""
+                />
+              ) : null}
+              <nav className="toc" aria-label="Table of contents" aria-busy={isNavigating}>
+                <p className="toc__heading">Chapters</p>
+                <ol>
+                  {parsedPublication.toc.map((item, itemIndex) => (
+                    <li key={item.id}>
+                      <button
+                        className={
+                          readerLocation?.activeTocId === item.id
+                            ? 'toc__item toc__item--active'
+                            : 'toc__item'
+                        }
+                        style={
+                          {
+                            '--toc-indent': `${Math.min(item.depth, 4) * 0.7}rem`,
+                          } as React.CSSProperties
+                        }
+                        type="button"
+                        disabled={isNavigating}
+                        aria-current={
+                          readerLocation?.activeTocId === item.id ? 'location' : undefined
+                        }
+                        onClick={() => void openTocItem(item)}
+                      >
+                        <span>{item.label.match(/^(\d+)\s*:/)?.[1] ?? itemIndex + 1}</span>
+                        <strong>{item.label}</strong>
+                      </button>
+                    </li>
+                  ))}
+                </ol>
+              </nav>
+            </>
+          ) : publication ? (
             <article className="publication-card" aria-label="Selected publication">
               <span className="publication-card__index" aria-hidden="true">
                 01
@@ -199,7 +323,7 @@ export function App({ platform }: AppProps): React.JSX.Element {
           )}
 
           <button
-            className="button button--wide"
+            className="button button--wide contents-open-button"
             type="button"
             disabled={!platform.capabilities.selectLocalPublication || isSelecting}
             onClick={() => void selectPublication()}
@@ -218,7 +342,7 @@ export function App({ platform }: AppProps): React.JSX.Element {
             </div>
             <div>
               <dt>Safety</dt>
-              <dd>Strict</dd>
+              <dd>Strict · offline</dd>
             </div>
           </dl>
         </aside>
@@ -240,7 +364,43 @@ export function App({ platform }: AppProps): React.JSX.Element {
               </div>
             ) : isBrowserPreview ? (
               <div className="browser-reading-sheet">
-                {isBootstrapping && !publication ? (
+                {publication?.availability === 'selected' && readerEngineFactory ? (
+                  <div className="reader-engine-stage">
+                    <div className="reader-engine-host" ref={browserReaderHostRef} />
+                    {browserReaderStatus === 'opening' ? (
+                      <div className="reader-engine-overlay" role="status">
+                        <div className="reader-skeleton" aria-label="Opening EPUB">
+                          <span />
+                          <span />
+                          <span />
+                        </div>
+                        <p>Preparing chapters in Strict mode…</p>
+                      </div>
+                    ) : null}
+                    {browserReaderStatus === 'error' ? (
+                      <div
+                        className="reader-engine-overlay reader-engine-overlay--error"
+                        role="alert"
+                      >
+                        <p className="chapter-kicker">Could not prepare this book</p>
+                        <h1>NovelReaper kept the file untouched.</h1>
+                        <p>{readerError}</p>
+                        <div className="reader-engine-overlay__actions">
+                          <button
+                            className="button button--primary"
+                            type="button"
+                            onClick={() => setReaderAttempt((attempt) => attempt + 1)}
+                          >
+                            Try again
+                          </button>
+                          <button type="button" onClick={() => void selectPublication()}>
+                            Choose another EPUB
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : isBootstrapping && !publication ? (
                   <div className="reader-skeleton" aria-label="Loading browser preview">
                     <span />
                     <span />
@@ -248,14 +408,14 @@ export function App({ platform }: AppProps): React.JSX.Element {
                   </div>
                 ) : publication?.availability === 'selected' ? (
                   <div className="publication-ready">
-                    <p className="chapter-kicker">File accepted · Strict preview</p>
+                    <p className="chapter-kicker">File accepted</p>
                     <h1>{publication.displayName}</h1>
                     <div className="ornament" aria-hidden="true">
                       ◆
                     </div>
                     <p>
-                      NovelReaper has validated the file extension, size, and ZIP signature. The
-                      file remains in this browser tab and has not been uploaded or copied.
+                      This runtime does not have a chapter engine. Reopen the browser preview to
+                      read the selected EPUB.
                     </p>
                     <dl className="file-facts">
                       <div>
@@ -267,13 +427,6 @@ export function App({ platform }: AppProps): React.JSX.Element {
                         <dd>{formatDate(publication.lastModified)}</dd>
                       </div>
                     </dl>
-                    <aside className="next-phase-note">
-                      <span>B2</span>
-                      <p>
-                        EPUB parsing, table of contents, and chapter rendering are the next
-                        implementation stop.
-                      </p>
-                    </aside>
                   </div>
                 ) : publication?.availability === 'reselect-required' ? (
                   <div className="publication-ready publication-ready--reselect">
@@ -301,8 +454,8 @@ export function App({ platform }: AppProps): React.JSX.Element {
                       ◆
                     </div>
                     <p>
-                      Choose a local EPUB to establish the browser reader session. Actual chapter
-                      rendering begins in Browser Phase B2.
+                      Choose a local EPUB to read its metadata, contents, and chapters without
+                      uploading or copying the source file.
                     </p>
                     <button
                       className="button button--primary"
@@ -324,6 +477,15 @@ export function App({ platform }: AppProps): React.JSX.Element {
                     </button>
                   </div>
                 ) : null}
+                {readerError && browserReaderStatus === 'ready' ? (
+                  <div className="operation-message operation-message--error" role="alert">
+                    <strong>Chapter navigation failed</strong>
+                    <span>{readerError}</span>
+                    <button type="button" onClick={() => setReaderError(undefined)}>
+                      Dismiss
+                    </button>
+                  </div>
+                ) : null}
               </div>
             ) : (
               <span className="visually-hidden" aria-live="polite">
@@ -337,38 +499,44 @@ export function App({ platform }: AppProps): React.JSX.Element {
           <p className="eyebrow">Appearance</p>
           <h2>Warm editorial</h2>
           <p className="panel-intro">
-            The shared shell is running independently of Electron. Reading controls arrive after the
-            EPUB engine is connected.
+            EPUB chapters stay local and open one at a time. Typography controls arrive in a later
+            browser phase.
           </p>
 
           <section className="environment-card" aria-label="Preview environment">
-            <span className="environment-card__number">B1</span>
+            <span className="environment-card__number">B2</span>
             <div>
-              <strong>{isBrowserPreview ? 'Browser adapter' : 'Electron adapter'}</strong>
-              <p>{isBrowserPreview ? 'File + Blob APIs' : 'Typed preload IPC'}</p>
+              <strong>{isBrowserPreview ? 'Strict EPUB reader' : 'Electron adapter'}</strong>
+              <p>
+                {isBrowserPreview
+                  ? parsedPublication
+                    ? `${parsedPublication.spineLength.toLocaleString()} spine sections`
+                    : 'Metadata · TOC · chapters'
+                  : 'Typed preload IPC'}
+              </p>
             </div>
           </section>
 
           <ol className="phase-steps">
-            <li className="phase-steps__active">
+            <li>
               <span>01</span>
               <div>
                 <strong>Select locally</strong>
                 <p>No upload or managed copy.</p>
               </div>
             </li>
-            <li>
+            <li className="phase-steps__active">
               <span>02</span>
               <div>
-                <strong>Read in B2</strong>
-                <p>Metadata, TOC, and chapters.</p>
+                <strong>Read locally</strong>
+                <p>Metadata, TOC, and one chapter at a time.</p>
               </div>
             </li>
             <li>
               <span>03</span>
               <div>
-                <strong>Polish together</strong>
-                <p>Shared UI before Electron.</p>
+                <strong>Navigate in B3</strong>
+                <p>Progress, restore, and end controls.</p>
               </div>
             </li>
           </ol>
@@ -384,7 +552,7 @@ export function App({ platform }: AppProps): React.JSX.Element {
       <footer className="statusbar">
         <span>Environment: {isBrowserPreview ? 'Browser' : 'Electron'}</span>
         <span>Source: {publicationStatus}</span>
-        <span>Reader engine: {isBrowserPreview ? 'B2 pending' : readerState.status}</span>
+        <span>Reader engine: {isBrowserPreview ? browserReaderStatus : readerState.status}</span>
       </footer>
 
       {bootstrapError ? (

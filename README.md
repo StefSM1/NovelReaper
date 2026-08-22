@@ -13,11 +13,14 @@ npm install
 npm run web
 ```
 
-Open <http://127.0.0.1:5173>. Browser Phase B1 can select and validate a local EPUB file.
-EPUB parsing, the table of contents, and chapter rendering arrive in Phase B2.
+Open <http://127.0.0.1:5173>. Browser Phase B2 selects and validates a local EPUB, parses EPUB 2/3
+metadata and contents through the pinned Foliate adapter, and renders one reflowable chapter at a
+time in continuous-scroll Strict mode.
 
 The selected `File` remains in the active browser tab only. NovelReaper stores only bounded
 display metadata in browser storage, so the book must be selected again after a refresh.
+EPUB scripts, event handlers, active embeds, and outbound book requests are disabled in this phase.
+DRM and fixed-layout/comic EPUBs are outside the v1 scope.
 
 ## Checks
 

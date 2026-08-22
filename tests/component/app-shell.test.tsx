@@ -8,12 +8,59 @@ import type {
   PublicationSelectionResult,
 } from '../../src/platform/contracts';
 import { PlatformOperationError } from '../../src/platform/contracts';
+import type {
+  ReaderEngine,
+  ReaderEngineEvent,
+  ReaderPublication,
+} from '../../src/reader/contracts';
 import { App } from '../../src/renderer/app/App';
 import type { ReaderStateSnapshot, WindowStateSnapshot } from '../../src/shared/contracts/ipc';
 
 interface FakePlatform extends NovelReaperPlatform {
   publishReader: (state: ReaderStateSnapshot) => void;
   publishWindow: (state: WindowStateSnapshot) => void;
+}
+
+const PARSED_BOOK: ReaderPublication = {
+  metadata: { title: 'Calm Book', author: 'Quiet Author' },
+  toc: [
+    { id: 'toc-0', label: 'Opening', target: 'text/opening.xhtml', depth: 0, spineIndex: 0 },
+    { id: 'toc-1', label: 'Second Chapter', target: 'text/two.xhtml', depth: 0, spineIndex: 1 },
+  ],
+  spineLength: 2,
+};
+
+function createReaderEngine(options?: { openError?: Error }): ReaderEngine {
+  let listener: ((event: ReaderEngineEvent) => void) | undefined;
+  return {
+    open: vi.fn((_source, container) => {
+      if (options?.openError) return Promise.reject(options.openError);
+      const surface = document.createElement('div');
+      surface.textContent = 'Rendered chapter';
+      container.replaceChildren(surface);
+      listener?.({
+        type: 'relocation',
+        location: { spineIndex: 0, fractionInChapter: 0, activeTocId: 'toc-0' },
+      });
+      return Promise.resolve(PARSED_BOOK);
+    }),
+    goTo: vi.fn((target) => {
+      if (target === 'text/two.xhtml') {
+        listener?.({
+          type: 'relocation',
+          location: { spineIndex: 1, fractionInChapter: 0, activeTocId: 'toc-1' },
+        });
+      }
+      return Promise.resolve();
+    }),
+    subscribe: vi.fn((nextListener) => {
+      listener = nextListener;
+      return () => {
+        listener = undefined;
+      };
+    }),
+    destroy: vi.fn(),
+  };
 }
 
 function createPlatform(options?: {
@@ -110,13 +157,24 @@ describe('shared NovelReaper application shell', () => {
         },
       },
     });
-    render(<App platform={platform} />);
+    const engine = createReaderEngine();
+    render(<App platform={platform} readerEngineFactory={() => engine} />);
 
     expect(await screen.findByRole('button', { name: 'Open EPUB' })).toBeVisible();
     await user.click(screen.getByRole('button', { name: 'Open EPUB' }));
 
-    expect(await screen.findAllByText('Calm.epub')).toHaveLength(2);
-    expect(screen.getByText(/EPUB parsing, table of contents/)).toBeVisible();
+    expect(await screen.findByRole('heading', { name: 'Calm Book' })).toBeVisible();
+    expect(screen.getByText('Quiet Author')).toBeVisible();
+    expect(screen.getByRole('button', { name: /Opening/ })).toHaveAttribute(
+      'aria-current',
+      'location',
+    );
+    await user.click(screen.getByRole('button', { name: /Second Chapter/ }));
+    expect(engine.goTo).toHaveBeenCalledWith('text/two.xhtml');
+    expect(screen.getByRole('button', { name: /Second Chapter/ })).toHaveAttribute(
+      'aria-current',
+      'location',
+    );
     expect(platform.selectPublication).toHaveBeenCalledOnce();
   });
 
@@ -141,11 +199,12 @@ describe('shared NovelReaper application shell', () => {
         },
       },
     });
-    render(<App platform={platform} />);
+    const engine = createReaderEngine();
+    render(<App platform={platform} readerEngineFactory={() => engine} />);
 
     expect(await screen.findByRole('button', { name: 'Open EPUB' })).toBeVisible();
     await user.click(screen.getByRole('button', { name: 'Open EPUB' }));
-    expect(await screen.findByRole('heading', { name: 'Calm.epub' })).toBeVisible();
+    expect(await screen.findByRole('heading', { name: 'Calm Book' })).toBeVisible();
 
     vi.mocked(platform.selectPublication).mockRejectedValue(
       new PlatformOperationError('INVALID_ZIP_SIGNATURE', 'Choose a valid EPUB file.'),
@@ -153,7 +212,36 @@ describe('shared NovelReaper application shell', () => {
     await user.click(screen.getByRole('button', { name: 'Choose another EPUB' }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Choose a valid EPUB file.');
-    expect(screen.getByRole('heading', { name: 'Calm.epub' })).toBeVisible();
+    expect(screen.getByRole('heading', { name: 'Calm Book' })).toBeVisible();
+  });
+
+  it('shows a recoverable EPUB engine error with retry and reselect actions', async () => {
+    const user = userEvent.setup();
+    const file = new File([new Uint8Array([0x50, 0x4b, 0x03, 0x04])], 'Broken.epub', {
+      type: 'application/epub+zip',
+    });
+    const platform = createPlatform({
+      environment: 'browser-preview',
+      selection: {
+        status: 'selected',
+        publication: {
+          id: 'f4cc55dc-c548-4780-b384-0c663bfdb14f',
+          displayName: file.name,
+          fileSize: file.size,
+          lastModified: file.lastModified,
+          mimeType: file.type,
+          availability: 'selected',
+          file,
+        },
+      },
+    });
+    const engine = createReaderEngine({ openError: new Error('broken') });
+    render(<App platform={platform} readerEngineFactory={() => engine} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Open EPUB' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('file untouched');
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeEnabled();
+    expect(screen.getAllByRole('button', { name: 'Choose another EPUB' })).toHaveLength(2);
   });
 
   it('shows a shell-owned crash recovery action', async () => {

@@ -41,8 +41,16 @@ Fontsource package metadata and the installed package license files are the sour
 of the distribution notices. Only the weights actually imported by NovelReaper are
 bundled into application assets.
 
-## Planned EPUB engine
+## EPUB engine
 
-Foliate-js is not integrated during Browser Phase B1. Phase B2 will pin and audit commit
-`78914aef4466eb960965702401634c2cb348e9b1` before any code is vendored or bundled.
-Its upstream repository is <https://github.com/johnfactotum/foliate-js>.
+- Foliate-js - MIT License, pinned to commit
+  `78914aef4466eb960965702401634c2cb348e9b1` through the exact archive and integrity entry in
+  `package-lock.json`.
+- Foliate-js vendors zip.js for archive reading; its installed license notice is BSD-3-Clause.
+
+The upstream project has no stable release and documents scripted EPUB content as unsupported and
+unsafe in its same-origin blob iframe design. Browser Phase B2 uses Foliate's EPUB parser and
+resource loader behind NovelReaper's reader contract, but renders sanitized chapters in a
+project-owned `srcdoc` frame whose sandbox omits script permission entirely. It also blocks outbound
+book resources. Upstream:
+<https://github.com/johnfactotum/foliate-js>.
