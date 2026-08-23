@@ -12,6 +12,7 @@ describe('serialized reader navigation', () => {
   it('routes Next through one transaction and flushes its completion', async () => {
     const serviceRef: { current?: ReaderNavigationService } = {};
     const engine: ReaderEngine = {
+      applyAppearance: vi.fn().mockResolvedValue(undefined),
       open: vi.fn(),
       goTo: vi.fn((target) => {
         serviceRef.current?.relocate(relocation(Number(target)));
@@ -45,6 +46,7 @@ describe('serialized reader navigation', () => {
       release = resolve;
     });
     const engine: ReaderEngine = {
+      applyAppearance: vi.fn().mockResolvedValue(undefined),
       open: vi.fn(),
       goTo: vi.fn(() => pending),
       setNavigationState: vi.fn(),
@@ -69,6 +71,7 @@ describe('serialized reader navigation', () => {
   it('does not complete chapters through Previous or Contents', async () => {
     const serviceRef: { current?: ReaderNavigationService } = {};
     const engine: ReaderEngine = {
+      applyAppearance: vi.fn().mockResolvedValue(undefined),
       open: vi.fn(),
       goTo: vi.fn((target) => {
         serviceRef.current?.relocate(relocation(Number(target)));

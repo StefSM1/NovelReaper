@@ -1,6 +1,6 @@
 import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type {
   NovelReaperPlatform,
@@ -38,6 +38,7 @@ interface FakeReaderEngine extends ReaderEngine {
 function createReaderEngine(options?: { openError?: Error }): FakeReaderEngine {
   let listener: ((event: ReaderEngineEvent) => void) | undefined;
   return {
+    applyAppearance: vi.fn().mockResolvedValue(undefined),
     open: vi.fn((_source, container) => {
       if (options?.openError) return Promise.reject(options.openError);
       const surface = document.createElement('div');
@@ -109,6 +110,7 @@ function createPlatform(options?: {
         canRetry: false,
       },
       window: { isMaximized: false, isFullScreen: false },
+      library: [],
       notices: [],
     }),
     selectPublication: vi.fn().mockResolvedValue(
@@ -117,6 +119,8 @@ function createPlatform(options?: {
         reason: 'Not available in this test adapter.',
       },
     ),
+    updateLibraryPublication: vi.fn().mockResolvedValue([]),
+    removeLibraryPublication: vi.fn().mockResolvedValue([]),
     setReaderBounds: vi.fn().mockResolvedValue(undefined),
     recoverReader: vi.fn().mockResolvedValue({ status: 'ready', generation: 2, canRetry: false }),
     toggleFullscreen: vi.fn().mockResolvedValue({ isMaximized: false, isFullScreen: true }),
@@ -139,18 +143,17 @@ function createPlatform(options?: {
 }
 
 describe('shared NovelReaper application shell', () => {
-  it('retains the bounded Electron shell controls without a fullscreen action', async () => {
-    const user = userEvent.setup();
+  beforeEach(() => window.localStorage.clear());
+
+  it('starts the Electron shell on its bounded library screen', async () => {
     const platform = createPlatform();
     render(<App platform={platform} />);
 
     expect(await screen.findByText('NovelReaper')).toBeVisible();
-    expect(screen.getByTestId('reader-frame')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'No volumes yet' })).toBeVisible();
+    expect(screen.queryByTestId('reader-frame')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /fullscreen/i })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Open EPUB' })).toBeDisabled();
-
-    await user.click(screen.getByRole('button', { name: 'Focus mode' }));
-    expect(screen.getByRole('button', { name: 'Exit focus' })).toBeVisible();
   });
 
   it('accepts a browser-selected publication without Electron', async () => {
@@ -192,7 +195,10 @@ describe('shared NovelReaper application shell', () => {
       'aria-current',
       'location',
     );
-    expect(screen.getByText('Overall: 0%')).toBeVisible();
+    expect(screen.getByRole('progressbar', { name: 'Overall reading progress' })).toHaveAttribute(
+      'aria-valuenow',
+      '0',
+    );
     expect(platform.selectPublication).toHaveBeenCalledOnce();
   });
 
@@ -225,9 +231,13 @@ describe('shared NovelReaper application shell', () => {
     act(() => engine.publish({ type: 'navigation-request', request: { source: 'next' } }));
 
     expect(engine.goTo).toHaveBeenCalledWith(1);
-    expect(await screen.findByText('Overall: 50%')).toBeVisible();
+    expect(
+      await screen.findByRole('progressbar', { name: 'Overall reading progress' }),
+    ).toHaveAttribute('aria-valuenow', '50');
     act(() => engine.publish({ type: 'navigation-request', request: { source: 'finish' } }));
-    expect(await screen.findByText('Overall: 100%')).toBeVisible();
+    expect(
+      await screen.findByRole('progressbar', { name: 'Overall reading progress' }),
+    ).toHaveAttribute('aria-valuenow', '100');
   });
 
   it('surfaces browser selection errors without replacing the existing shell state', async () => {
@@ -267,6 +277,20 @@ describe('shared NovelReaper application shell', () => {
     expect(screen.getByRole('heading', { name: 'Calm Book' })).toBeVisible();
   });
 
+  it('shows selection errors on the Library screen', async () => {
+    const user = userEvent.setup();
+    const platform = createPlatform({ environment: 'browser-preview' });
+    vi.mocked(platform.selectPublication).mockRejectedValue(
+      new PlatformOperationError('INVALID_ZIP_SIGNATURE', 'Choose a valid EPUB file.'),
+    );
+    render(<App platform={platform} readerEngineFactory={() => createReaderEngine()} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Open EPUB' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Choose a valid EPUB file.');
+    expect(screen.getByRole('heading', { name: 'No volumes yet' })).toBeVisible();
+  });
+
   it('shows a recoverable EPUB engine error with retry and reselect actions', async () => {
     const user = userEvent.setup();
     const file = new File([new Uint8Array([0x50, 0x4b, 0x03, 0x04])], 'Broken.epub', {
@@ -296,8 +320,44 @@ describe('shared NovelReaper application shell', () => {
     expect(screen.getAllByRole('button', { name: 'Choose another EPUB' })).toHaveLength(2);
   });
 
-  it('shows a shell-owned crash recovery action', async () => {
+  it('applies and persists reader appearance and focus mode', async () => {
     const user = userEvent.setup();
+    const file = new File([new Uint8Array([0x50, 0x4b, 0x03, 0x04])], 'Calm.epub', {
+      type: 'application/epub+zip',
+    });
+    const platform = createPlatform({
+      environment: 'browser-preview',
+      selection: {
+        status: 'selected',
+        publication: {
+          id: 'f4cc55dc-c548-4780-b384-0c663bfdb14f',
+          displayName: file.name,
+          fileSize: file.size,
+          lastModified: file.lastModified,
+          mimeType: file.type,
+          availability: 'selected',
+          file,
+        },
+      },
+    });
+    const engine = createReaderEngine();
+    render(<App platform={platform} readerEngineFactory={() => engine} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Open EPUB' }));
+    await screen.findByRole('heading', { name: 'Calm Book' });
+    await user.click(screen.getByRole('button', { name: 'Dark' }));
+
+    expect(engine.applyAppearance).toHaveBeenLastCalledWith(
+      expect.objectContaining({ theme: 'dark' }),
+    );
+    expect(document.querySelector('.app')).toHaveClass('app--dark');
+
+    await user.click(screen.getByRole('switch', { name: 'Toggle focus mode' }));
+    expect(document.querySelector('.app')).toHaveClass('app--focus');
+    expect(window.localStorage.getItem('novelreaper:browser-settings:v1')).toContain('"focus"');
+  });
+
+  it('keeps the library usable when the dormant Electron reader reports a crash', async () => {
     const platform = createPlatform();
     render(<App platform={platform} />);
 
@@ -311,9 +371,9 @@ describe('shared NovelReaper application shell', () => {
       });
     });
 
-    const restart = screen.getByRole('button', { name: 'Restart reading surface' });
-    expect(restart).toBeEnabled();
-    await user.click(restart);
-    expect(platform.recoverReader).toHaveBeenCalledOnce();
+    expect(screen.getByRole('heading', { name: 'No volumes yet' })).toBeVisible();
+    expect(
+      screen.queryByRole('button', { name: 'Restart reading surface' }),
+    ).not.toBeInTheDocument();
   });
 });

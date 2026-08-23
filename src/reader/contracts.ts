@@ -1,3 +1,5 @@
+import type { ReaderAppearanceSettings } from './appearance';
+
 export type ReaderNavigationTarget = string | number;
 
 export interface ReaderMetadata {
@@ -60,6 +62,7 @@ export interface ReaderEngine {
     initialLocator?: ReaderLocator,
   ) => Promise<ReaderPublication>;
   goTo: (target: ReaderNavigationTarget, locator?: ReaderLocator) => Promise<void>;
+  applyAppearance: (settings: ReaderAppearanceSettings) => Promise<void>;
   setNavigationState: (state: ReaderNavigationState) => void;
   subscribe: (listener: (event: ReaderEngineEvent) => void) => () => void;
   destroy: () => void;

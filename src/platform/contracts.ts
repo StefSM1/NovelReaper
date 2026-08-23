@@ -23,6 +23,10 @@ export interface PublicationDescriptor {
   lastModified: number;
   mimeType: string;
   availability: PublicationAvailability;
+  title?: string;
+  author?: string;
+  spineLength?: number;
+  lastOpenedAt?: number;
 }
 
 export interface SelectedPublication extends PublicationDescriptor {
@@ -42,8 +46,16 @@ export interface PlatformBootstrapState {
   capabilities: PlatformCapabilities;
   reader: ReaderStateSnapshot;
   window: WindowStateSnapshot;
+  library: PublicationDescriptor[];
   recentPublication?: PublicationDescriptor;
   notices: string[];
+}
+
+export interface PublicationLibraryUpdate {
+  title?: string;
+  author?: string;
+  spineLength?: number;
+  lastOpenedAt?: number;
 }
 
 export interface NovelReaperPlatform {
@@ -51,6 +63,11 @@ export interface NovelReaperPlatform {
   readonly capabilities: PlatformCapabilities;
   getBootstrapState: () => Promise<PlatformBootstrapState>;
   selectPublication: () => Promise<PublicationSelectionResult>;
+  updateLibraryPublication: (
+    id: string,
+    update: PublicationLibraryUpdate,
+  ) => Promise<PublicationDescriptor[]>;
+  removeLibraryPublication: (id: string) => Promise<PublicationDescriptor[]>;
   setReaderBounds: (bounds: ReaderBounds) => Promise<void>;
   recoverReader: () => Promise<ReaderStateSnapshot>;
   toggleFullscreen: () => Promise<WindowStateSnapshot>;

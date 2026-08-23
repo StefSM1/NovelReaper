@@ -1,6 +1,17 @@
 import type { FoliateBook } from 'foliate-js/view.js';
 import * as CFI from 'foliate-js/epubcfi.js';
+import atkinsonUrl from '@fontsource/atkinson-hyperlegible/files/atkinson-hyperlegible-latin-400-normal.woff2';
+import literataUrl from '@fontsource/literata/files/literata-latin-400-normal.woff2';
+import loraUrl from '@fontsource/lora/files/lora-latin-400-normal.woff2';
+import merriweatherUrl from '@fontsource/merriweather/files/merriweather-latin-400-normal.woff2';
+import sourceSerifUrl from '@fontsource/source-serif-4/files/source-serif-4-latin-400-normal.woff2';
 
+import {
+  DEFAULT_READER_APPEARANCE,
+  normalizeReaderAppearance,
+  READER_FONT_CSS,
+  type ReaderAppearanceSettings,
+} from './appearance';
 import {
   ReaderEngineError,
   type ReaderEngine,
@@ -14,24 +25,44 @@ import {
 } from './contracts';
 import { closestFrameElement } from './frame-events';
 import { activeTocId, metadataFromBook, tocFromBook } from './publication-model';
-import { installStrictPublicationPolicy, sanitizeStrictMarkup } from './strict-policy';
+import {
+  installStrictPublicationPolicy,
+  sanitizeStrictCss,
+  sanitizeStrictMarkup,
+} from './strict-policy';
 
 const CHAPTER_LOAD_TIMEOUT_MS = 15_000;
-const READING_STYLE = `
-  :root { color-scheme: light; background: #fffdf7; }
-  html { min-height: 100%; background: #fffdf7 !important; scroll-behavior: smooth; }
+const FONT_FACE_STYLE = `
+  @font-face { font-family: 'Literata'; src: url('${literataUrl}') format('woff2'); font-display: swap; }
+  @font-face { font-family: 'Lora'; src: url('${loraUrl}') format('woff2'); font-display: swap; }
+  @font-face { font-family: 'Merriweather'; src: url('${merriweatherUrl}') format('woff2'); font-display: swap; }
+  @font-face { font-family: 'Source Serif 4'; src: url('${sourceSerifUrl}') format('woff2'); font-display: swap; }
+  @font-face { font-family: 'Atkinson Hyperlegible'; src: url('${atkinsonUrl}') format('woff2'); font-display: swap; }
+`;
+
+function readingStyle(settings: ReaderAppearanceSettings): string {
+  const dark = settings.theme === 'dark';
+  const paper = dark ? '#2c302e' : '#fffdf7';
+  const text = dark ? '#d8dad5' : '#26302f';
+  const heading = dark ? '#ffffff' : '#1f2826';
+  const neutral = dark ? '#a3a7a2' : '#8f918d';
+  const divider = dark ? '#555b57' : '#d9cdbf';
+  return `
+  ${FONT_FACE_STYLE}
+  :root { color-scheme: ${dark ? 'dark' : 'light'}; background: ${paper}; }
+  html { min-height: 100%; background: ${paper} !important; scroll-behavior: smooth; }
   body {
-    max-width: 46rem !important;
+    max-width: ${settings.pageWidthCh}ch !important;
     min-height: 100%;
     margin: 0 auto !important;
     padding: 4.5rem clamp(1.4rem, 5vw, 4rem) 6rem !important;
-    color: #26302f !important;
-    background: #fffdf7 !important;
-    font-family: Literata, Georgia, serif !important;
-    font-size: 20px !important;
-    line-height: 1.72 !important;
+    color: ${text} !important;
+    background: ${paper} !important;
+    font-family: ${READER_FONT_CSS[settings.fontFamily]} !important;
+    font-size: ${settings.fontSizePx}px !important;
+    line-height: ${settings.lineHeight} !important;
   }
-  h1, h2, h3, h4 { color: #1f2826 !important; line-height: 1.25 !important; }
+  h1, h2, h3, h4 { color: ${heading} !important; line-height: 1.25 !important; }
   p { margin-block: 0 1.35em; }
   img, svg, video { max-width: 100% !important; height: auto !important; }
   .novelreaper-chapter-navigation {
@@ -41,21 +72,21 @@ const READING_STYLE = `
     justify-content: space-between;
     margin-top: 4.5rem;
     padding-top: 2rem;
-    border-top: 1px solid #d9cdbf;
+    border-top: 1px solid ${divider};
   }
   .novelreaper-chapter-navigation button {
     min-width: 12rem;
     min-height: 3rem;
     padding: 0.75rem 1.15rem;
-    color: #202725;
-    background: #fffdf7;
-    border: 1.5px solid #8f918d;
+    color: ${dark ? '#ffffff' : '#202725'};
+    background: ${paper};
+    border: 1.5px solid ${neutral};
     border-radius: 6px;
     font: 600 0.9rem/1.2 system-ui, sans-serif;
     cursor: pointer;
   }
   .novelreaper-chapter-navigation button:last-child {
-    color: #fffdf7;
+    color: #ffffff;
     background: #1f5b49;
     border-color: #1f5b49;
   }
@@ -68,6 +99,7 @@ const READING_STYLE = `
     .novelreaper-chapter-navigation button { width: 100%; }
   }
 `;
+}
 
 function boundedLabel(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
@@ -110,6 +142,7 @@ export class FoliateReaderEngine implements ReaderEngine {
   private coverUrl: string | undefined;
   private activeSectionIndex: number | undefined;
   private navigationState: ReaderNavigationState = { busy: false, finished: false };
+  private appearance: ReaderAppearanceSettings = DEFAULT_READER_APPEARANCE;
   private lastLocation: ReaderLocator | undefined;
   private layoutObserver: ResizeObserver | undefined;
   private displayGeneration = 0;
@@ -241,6 +274,19 @@ export class FoliateReaderEngine implements ReaderEngine {
     }
   }
 
+  public async applyAppearance(settings: ReaderAppearanceSettings): Promise<void> {
+    this.appearance = normalizeReaderAppearance(settings);
+    const document = this.frame?.contentDocument;
+    const activeIndex = this.activeSectionIndex;
+    if (!document || activeIndex === undefined) return;
+    const locator = this.lastLocation;
+    const style = document.head?.querySelector<HTMLStyleElement>('style[data-novel-reaper]');
+    if (style) style.textContent = sanitizeStrictCss(readingStyle(this.appearance));
+    await this.settleFrameLayout();
+    if (locator?.spineIndex === activeIndex) this.scrollToLocator(locator);
+    this.emitRelocation(activeIndex);
+  }
+
   public setNavigationState(state: ReaderNavigationState): void {
     this.navigationState = state;
     if (this.activeSectionIndex !== undefined) this.installChapterNavigation();
@@ -290,7 +336,7 @@ export class FoliateReaderEngine implements ReaderEngine {
       const markup = sanitizeStrictMarkup(
         await response.text(),
         chapterType(response),
-        READING_STYLE,
+        readingStyle(this.appearance),
       );
       await this.loadFrameMarkup(frame, markup, generation);
       if (generation !== this.displayGeneration) return;

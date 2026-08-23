@@ -3,6 +3,7 @@ import type {
   NovelReaperPlatform,
   PlatformBootstrapState,
   PlatformCapabilities,
+  PublicationDescriptor,
   PublicationSelectionResult,
 } from '../contracts';
 
@@ -24,6 +25,7 @@ export class ElectronPlatformAdapter implements NovelReaperPlatform {
       ...state,
       environment: this.environment,
       capabilities: this.capabilities,
+      library: [],
       notices: [],
     };
   }
@@ -33,6 +35,14 @@ export class ElectronPlatformAdapter implements NovelReaperPlatform {
       status: 'unsupported',
       reason: 'Desktop EPUB import is scheduled for Desktop Phase D2.',
     });
+  }
+
+  public updateLibraryPublication(): Promise<PublicationDescriptor[]> {
+    return Promise.resolve([]);
+  }
+
+  public removeLibraryPublication(): Promise<PublicationDescriptor[]> {
+    return Promise.resolve([]);
   }
 
   public setReaderBounds(

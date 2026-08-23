@@ -41,10 +41,33 @@ describe('BrowserPlatformAdapter', () => {
     expect(JSON.stringify(stored)).not.toContain('file:');
 
     const nextSession = await adapterFor().getBootstrapState();
+    expect(nextSession.library).toHaveLength(1);
     expect(nextSession.recentPublication).toMatchObject({
       displayName: 'Novel.epub',
       availability: 'reselect-required',
     });
+  });
+
+  it('updates, orders, and removes remembered library cards without source paths', async () => {
+    const adapter = adapterFor(epubFile('First.epub'));
+    const selected = await adapter.selectPublication();
+    if (selected.status !== 'selected') throw new Error('Expected a selected publication.');
+
+    const updated = await adapter.updateLibraryPublication(selected.publication.id, {
+      title: 'First Volume',
+      author: 'Calm Author',
+      spineLength: 4200,
+      lastOpenedAt: 1_800_000_000_000,
+    });
+    expect(updated[0]).toMatchObject({
+      title: 'First Volume',
+      author: 'Calm Author',
+      spineLength: 4200,
+    });
+    expect(JSON.stringify(window.localStorage)).not.toContain('sourcePath');
+
+    await expect(adapter.removeLibraryPublication(selected.publication.id)).resolves.toEqual([]);
+    expect((await adapter.getBootstrapState()).library).toEqual([]);
   });
 
   it('treats picker cancellation as a neutral result', async () => {

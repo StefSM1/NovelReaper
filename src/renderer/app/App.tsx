@@ -12,6 +12,11 @@ import {
   DebouncedProgressWriter,
 } from '../../platform/browser/browser-progress-store';
 import {
+  loadBrowserReaderPreferences,
+  saveBrowserReaderPreferences,
+  type BrowserReaderPreferences,
+} from '../../platform/browser/browser-settings-store';
+import {
   readerErrorMessage,
   type ReaderEngine,
   type ReaderEngineFactory,
@@ -21,13 +26,15 @@ import {
 } from '../../reader/contracts';
 import { navigationErrorMessage, ReaderNavigationService } from '../../reader/navigation-service';
 import {
-  chapterProgressState,
   createReaderProgress,
   overallProgress,
   storedReaderProgress,
   type ReaderProgressState,
 } from '../../reader/progress-state';
-import type { ReaderStateSnapshot } from '../../shared/contracts/ipc';
+import type { ReaderStateSnapshot, WindowStateSnapshot } from '../../shared/contracts/ipc';
+import { AppearancePanel } from './AppearancePanel';
+import { LibraryScreen } from './LibraryScreen';
+import { VirtualizedToc } from './VirtualizedToc';
 
 const INITIAL_READER_STATE: ReaderStateSnapshot = {
   status: 'idle',
@@ -51,14 +58,49 @@ function formatDate(timestamp: number): string {
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(timestamp);
 }
 
+function descriptorFromSelection(publication: SelectedPublication): PublicationDescriptor {
+  return {
+    id: publication.id,
+    displayName: publication.displayName,
+    fileSize: publication.fileSize,
+    lastModified: publication.lastModified,
+    mimeType: publication.mimeType,
+    availability: publication.availability,
+    ...(publication.title ? { title: publication.title } : {}),
+    ...(publication.author ? { author: publication.author } : {}),
+    ...(publication.spineLength ? { spineLength: publication.spineLength } : {}),
+    ...(publication.lastOpenedAt ? { lastOpenedAt: publication.lastOpenedAt } : {}),
+  };
+}
+
+function upsertLibraryEntry(
+  entries: PublicationDescriptor[],
+  entry: PublicationDescriptor,
+): PublicationDescriptor[] {
+  return [entry, ...entries.filter((current) => current.id !== entry.id)].sort(
+    (left, right) => (right.lastOpenedAt ?? 0) - (left.lastOpenedAt ?? 0),
+  );
+}
+
 type BrowserReaderStatus = 'idle' | 'opening' | 'ready' | 'error';
+type AppScreen = 'library' | 'reader';
 
 export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Element {
   const readerFrameRef = useRef<HTMLDivElement>(null);
   const browserReaderHostRef = useRef<HTMLDivElement>(null);
   const browserReaderEngineRef = useRef<ReaderEngine | undefined>(undefined);
   const navigationServiceRef = useRef<ReaderNavigationService | undefined>(undefined);
+  const sessionPublicationsRef = useRef(new Map<string, SelectedPublication>());
+  const [settingsLoad] = useState(loadBrowserReaderPreferences);
+  const preferencesRef = useRef(settingsLoad.preferences);
+  const [preferences, setPreferences] = useState(settingsLoad.preferences);
   const [readerState, setReaderState] = useState(INITIAL_READER_STATE);
+  const [windowState, setWindowState] = useState<WindowStateSnapshot>({
+    isMaximized: false,
+    isFullScreen: false,
+  });
+  const [screen, setScreen] = useState<AppScreen>('library');
+  const [library, setLibrary] = useState<PublicationDescriptor[]>([]);
   const [publication, setPublication] = useState<PublicationDescriptor | SelectedPublication>();
   const [parsedPublication, setParsedPublication] = useState<ReaderPublication>();
   const [readerLocation, setReaderLocation] = useState<ReaderRelocation>();
@@ -67,7 +109,7 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
   const [readerError, setReaderError] = useState<string>();
   const [isNavigating, setIsNavigating] = useState(false);
   const [readerAttempt, setReaderAttempt] = useState(0);
-  const [isFocusMode, setIsFocusMode] = useState(false);
+  const [isApplyingAppearance, setIsApplyingAppearance] = useState(false);
   const [isBootstrapping, setIsBootstrapping] = useState(true);
   const [isSelecting, setIsSelecting] = useState(false);
   const [bootstrapError, setBootstrapError] = useState<string>();
@@ -81,8 +123,9 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
       .then((state) => {
         if (!mounted) return;
         setReaderState(state.reader);
-        setPublication(state.recentPublication);
-        setNotices(state.notices);
+        setWindowState(state.window);
+        setLibrary(state.library);
+        setNotices(settingsLoad.warning ? [...state.notices, settingsLoad.warning] : state.notices);
         setIsBootstrapping(false);
       })
       .catch(() => {
@@ -93,15 +136,21 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
 
     const unsubscribeReader = platform.onReaderState(setReaderState);
     const unsubscribeExitFocus = platform.onExitFocusRequested(() => {
-      setIsFocusMode(false);
+      setPreferences((current) => ({ ...current, mode: 'dashboard' }));
     });
+    const unsubscribeWindow = platform.onWindowState(setWindowState);
 
     return () => {
       mounted = false;
       unsubscribeReader();
       unsubscribeExitFocus();
+      unsubscribeWindow();
     };
-  }, [platform]);
+  }, [platform, settingsLoad.warning]);
+
+  useEffect(() => {
+    preferencesRef.current = preferences;
+  }, [preferences]);
 
   useEffect(() => {
     if (
@@ -167,7 +216,8 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
     document.addEventListener('visibilitychange', flushWhenHidden);
 
     void engine
-      .open(source, host, initialLocator)
+      .applyAppearance(preferencesRef.current.appearance)
+      .then(() => engine.open(source, host, initialLocator))
       .then((book) => {
         if (!active) return;
         if (progressLoadWarning) {
@@ -198,6 +248,27 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
         setReaderProgress(initialProgress);
         setParsedPublication(book);
         setBrowserReaderStatus('ready');
+        const update = {
+          title: book.metadata.title,
+          ...(book.metadata.author ? { author: book.metadata.author } : {}),
+          spineLength: book.spineLength,
+          lastOpenedAt: Date.now(),
+        };
+        void platform
+          .updateLibraryPublication(publication.id, update)
+          .then((entries) => {
+            if (!active) return;
+            const selected = sessionPublicationsRef.current.get(publication.id);
+            const fallback = selected
+              ? { ...descriptorFromSelection(selected), ...update }
+              : { ...descriptorFromSelection(publication), ...update };
+            if (entries.length) setLibrary(entries);
+            else setLibrary((current) => upsertLibraryEntry(current, fallback));
+          })
+          .catch(() => {
+            if (!active) return;
+            setNotices((current) => [...current, 'Library metadata could not be saved.']);
+          });
       })
       .catch((error: unknown) => {
         if (!active) return;
@@ -216,15 +287,48 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
       if (browserReaderEngineRef.current === engine) browserReaderEngineRef.current = undefined;
       navigationServiceRef.current = undefined;
     };
-  }, [publication, readerAttempt, readerEngineFactory]);
+  }, [platform, publication, readerAttempt, readerEngineFactory]);
+
+  const commitPreferences = useCallback(
+    (next: BrowserReaderPreferences): void => {
+      preferencesRef.current = next;
+      setPreferences(next);
+      if (platform.environment === 'browser-preview' && !saveBrowserReaderPreferences(next)) {
+        const warning = 'Reader settings could not be saved in this browser session.';
+        setNotices((current) => (current.includes(warning) ? current : [...current, warning]));
+      }
+    },
+    [platform.environment],
+  );
+
+  const changeMode = useCallback(
+    (mode: BrowserReaderPreferences['mode']): void => {
+      commitPreferences({ ...preferencesRef.current, mode });
+    },
+    [commitPreferences],
+  );
+
+  const changeAppearance = (update: Partial<BrowserReaderPreferences['appearance']>): void => {
+    if (isApplyingAppearance) return;
+    const appearance = { ...preferencesRef.current.appearance, ...update };
+    commitPreferences({ ...preferencesRef.current, appearance });
+    const engine = browserReaderEngineRef.current;
+    if (!engine) return;
+    setIsApplyingAppearance(true);
+    setReaderError(undefined);
+    void engine
+      .applyAppearance(appearance)
+      .catch(() => setReaderError('That appearance change could not be applied.'))
+      .finally(() => setIsApplyingAppearance(false));
+  };
 
   useEffect(() => {
     const handleEscape = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') setIsFocusMode(false);
+      if (event.key === 'Escape') changeMode('dashboard');
     };
     window.addEventListener('keydown', handleEscape);
     return () => window.removeEventListener('keydown', handleEscape);
-  }, []);
+  }, [changeMode]);
 
   const reportReaderBounds = useCallback(() => {
     if (platform.environment !== 'electron') return;
@@ -256,7 +360,7 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
       observer.disconnect();
       window.removeEventListener('resize', reportReaderBounds);
     };
-  }, [isFocusMode, platform.environment, reportReaderBounds]);
+  }, [platform.environment, preferences.mode, reportReaderBounds]);
 
   const selectPublication = async (): Promise<void> => {
     if (isSelecting) return;
@@ -267,7 +371,12 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
       const result = await platform.selectPublication();
       if (result.status === 'selected') {
         browserReaderEngineRef.current?.destroy();
+        sessionPublicationsRef.current.set(result.publication.id, result.publication);
+        setLibrary((current) =>
+          upsertLibraryEntry(current, descriptorFromSelection(result.publication)),
+        );
         setPublication(result.publication);
+        setScreen('reader');
         const warning = result.warning;
         if (warning) {
           setNotices((current) => [...current, warning]);
@@ -279,6 +388,43 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
     } finally {
       setIsSelecting(false);
     }
+  };
+
+  const openLibraryEntry = (entry: PublicationDescriptor): void => {
+    const selected = sessionPublicationsRef.current.get(entry.id);
+    if (!selected) {
+      void selectPublication();
+      return;
+    }
+    setPublication(selected);
+    setScreen('reader');
+  };
+
+  const removeLibraryEntry = (entry: PublicationDescriptor): void => {
+    sessionPublicationsRef.current.delete(entry.id);
+    setLibrary((current) => current.filter((item) => item.id !== entry.id));
+    if (publication?.id === entry.id) {
+      browserReaderEngineRef.current?.destroy();
+      setPublication(undefined);
+      setParsedPublication(undefined);
+      setReaderProgress(undefined);
+      setReaderLocation(undefined);
+      setScreen('library');
+    }
+    void platform
+      .removeLibraryPublication(entry.id)
+      .then((entries) => setLibrary(entries))
+      .catch(() => setOperationError('That library card could not be removed.'));
+  };
+
+  const toggleFullscreen = (): void => {
+    setOperationError(undefined);
+    void platform
+      .toggleFullscreen()
+      .then(setWindowState)
+      .catch((error: unknown) => {
+        setOperationError(platformErrorMessage(error));
+      });
   };
 
   const openTocItem = async (item: ReaderTocItem): Promise<void> => {
@@ -312,9 +458,20 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
 
   const isBrowserPreview = platform.environment === 'browser-preview';
   const publicationStatus = publication?.availability ?? 'none';
+  const overallPercent = readerProgress ? Math.round(overallProgress(readerProgress) * 100) : 0;
+  const chapterPercent = readerLocation ? Math.round(readerLocation.fractionInChapter * 100) : 0;
+  const isFocusMode = screen === 'reader' && preferences.mode === 'focus';
+  const appClassName = [
+    'app',
+    isFocusMode ? 'app--focus' : '',
+    screen === 'library' ? 'app--library' : '',
+    preferences.appearance.theme === 'dark' ? 'app--dark' : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
 
   return (
-    <div className={isFocusMode ? 'app app--focus' : 'app'}>
+    <div className={appClassName} data-theme={preferences.appearance.theme}>
       <header className="titlebar" data-testid="titlebar">
         <div className="titlebar__brand">
           <span aria-hidden="true" className="brand-mark">
@@ -323,6 +480,11 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
           <span>NovelReaper</span>
         </div>
         <nav className="titlebar__actions" aria-label="Reader controls">
+          {screen === 'reader' ? (
+            <button type="button" onClick={() => setScreen('library')}>
+              Library
+            </button>
+          ) : null}
           <button
             className="button button--primary"
             type="button"
@@ -331,321 +493,279 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
           >
             {isSelecting ? 'Opening…' : 'Open EPUB'}
           </button>
-          <button type="button" onClick={() => setIsFocusMode((value) => !value)}>
-            {isFocusMode ? 'Exit focus' : 'Focus mode'}
-          </button>
+          {screen === 'reader' && publication ? (
+            <button type="button" onClick={() => changeMode(isFocusMode ? 'dashboard' : 'focus')}>
+              {isFocusMode ? 'Exit focus' : 'Focus mode'}
+            </button>
+          ) : null}
         </nav>
       </header>
 
-      <main className="shell-content">
-        <aside className="shell-panel shell-panel--contents" aria-label="Contents preview">
-          <p className="eyebrow">Contents</p>
-          <h2>{parsedPublication?.metadata.title ?? 'Library preview'}</h2>
-          <p className="panel-intro">
-            {parsedPublication?.metadata.author
-              ? parsedPublication.metadata.author
-              : 'Select a local EPUB to read it chapter by chapter in Strict mode.'}
-          </p>
+      {screen === 'library' ? (
+        <LibraryScreen
+          entries={library}
+          isSelecting={isSelecting}
+          error={operationError}
+          hasSessionFile={(id) => sessionPublicationsRef.current.has(id)}
+          onOpenNew={() => void selectPublication()}
+          onOpenEntry={openLibraryEntry}
+          onRemoveEntry={removeLibraryEntry}
+          onDismissError={() => setOperationError(undefined)}
+        />
+      ) : (
+        <main className="shell-content">
+          <aside className="shell-panel shell-panel--contents" aria-label="Contents preview">
+            <p className="eyebrow">Contents</p>
+            <h2>{parsedPublication?.metadata.title ?? 'Library preview'}</h2>
+            <p className="panel-intro">
+              {parsedPublication?.metadata.author
+                ? parsedPublication.metadata.author
+                : 'Select a local EPUB to read it chapter by chapter in Strict mode.'}
+            </p>
 
-          {parsedPublication ? (
-            <>
-              {parsedPublication.metadata.coverUrl ? (
-                <img
-                  className="publication-cover"
-                  src={parsedPublication.metadata.coverUrl}
-                  alt=""
+            {parsedPublication ? (
+              <>
+                {parsedPublication.metadata.coverUrl ? (
+                  <img
+                    className="publication-cover"
+                    src={parsedPublication.metadata.coverUrl}
+                    alt=""
+                  />
+                ) : null}
+                <VirtualizedToc
+                  items={parsedPublication.toc}
+                  location={readerLocation}
+                  progress={readerProgress}
+                  busy={isNavigating}
+                  onOpen={(item) => void openTocItem(item)}
                 />
-              ) : null}
-              <nav className="toc" aria-label="Table of contents" aria-busy={isNavigating}>
-                <p className="toc__heading">Chapters</p>
-                <ol>
-                  {parsedPublication.toc.map((item, itemIndex) => (
-                    <li key={item.id}>
-                      <button
-                        className={
-                          readerLocation?.activeTocId === item.id
-                            ? 'toc__item toc__item--active'
-                            : item.spineIndex !== undefined &&
-                                readerProgress &&
-                                chapterProgressState(readerProgress, item.spineIndex) ===
-                                  'completed'
-                              ? 'toc__item toc__item--completed'
-                              : 'toc__item'
-                        }
-                        style={
-                          {
-                            '--toc-indent': `${Math.min(item.depth, 4) * 0.7}rem`,
-                          } as React.CSSProperties
-                        }
-                        type="button"
-                        disabled={isNavigating}
-                        aria-current={
-                          readerLocation?.activeTocId === item.id ? 'location' : undefined
-                        }
-                        onClick={() => void openTocItem(item)}
-                      >
-                        <span>{item.label.match(/^(\d+)\s*:/)?.[1] ?? itemIndex + 1}</span>
-                        <strong>{item.label}</strong>
-                      </button>
-                    </li>
-                  ))}
-                </ol>
-              </nav>
-            </>
-          ) : publication ? (
-            <article className="publication-card" aria-label="Selected publication">
-              <span className="publication-card__index" aria-hidden="true">
-                01
-              </span>
-              <div>
-                <strong>{publication.displayName}</strong>
-                <small>{formatFileSize(publication.fileSize)}</small>
-              </div>
-            </article>
-          ) : (
-            <div className="contents-empty">
-              <span aria-hidden="true">—</span>
-              <p>No publication selected</p>
-            </div>
-          )}
-
-          <button
-            className="button button--wide contents-open-button"
-            type="button"
-            disabled={!platform.capabilities.selectLocalPublication || isSelecting}
-            onClick={() => void selectPublication()}
-          >
-            {publication ? 'Choose another EPUB' : 'Choose an EPUB'}
-          </button>
-
-          <dl className="capability-list">
-            <div>
-              <dt>Upload</dt>
-              <dd>None</dd>
-            </div>
-            <div>
-              <dt>File access</dt>
-              <dd>This tab only</dd>
-            </div>
-            <div>
-              <dt>Safety</dt>
-              <dd>Strict · offline</dd>
-            </div>
-          </dl>
-        </aside>
-
-        <section className="reader-column" aria-label="Reading surface">
-          <div
-            className={isBrowserPreview ? 'reader-frame reader-frame--browser' : 'reader-frame'}
-            ref={readerFrameRef}
-            data-testid="reader-frame"
-          >
-            {readerState.status === 'crashed' ? (
-              <div className="reader-fallback" role="alert">
-                <p className="eyebrow">Reader isolated</p>
-                <h2>The reading surface stopped responding.</h2>
-                <p>{readerState.message ?? 'The application shell is still safe and usable.'}</p>
-                <button type="button" disabled={!readerState.canRetry} onClick={recoverReader}>
-                  Restart reading surface
-                </button>
-              </div>
-            ) : isBrowserPreview ? (
-              <div className="browser-reading-sheet">
-                {publication?.availability === 'selected' && readerEngineFactory ? (
-                  <div className="reader-engine-stage">
-                    <div className="reader-engine-host" ref={browserReaderHostRef} />
-                    {browserReaderStatus === 'opening' ? (
-                      <div className="reader-engine-overlay" role="status">
-                        <div className="reader-skeleton" aria-label="Opening EPUB">
-                          <span />
-                          <span />
-                          <span />
-                        </div>
-                        <p>Preparing chapters in Strict mode…</p>
-                      </div>
-                    ) : null}
-                    {browserReaderStatus === 'error' ? (
-                      <div
-                        className="reader-engine-overlay reader-engine-overlay--error"
-                        role="alert"
-                      >
-                        <p className="chapter-kicker">Could not prepare this book</p>
-                        <h1>NovelReaper kept the file untouched.</h1>
-                        <p>{readerError}</p>
-                        <div className="reader-engine-overlay__actions">
-                          <button
-                            className="button button--primary"
-                            type="button"
-                            onClick={() => setReaderAttempt((attempt) => attempt + 1)}
-                          >
-                            Try again
-                          </button>
-                          <button type="button" onClick={() => void selectPublication()}>
-                            Choose another EPUB
-                          </button>
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
-                ) : isBootstrapping && !publication ? (
-                  <div className="reader-skeleton" aria-label="Loading browser preview">
-                    <span />
-                    <span />
-                    <span />
-                  </div>
-                ) : publication?.availability === 'selected' ? (
-                  <div className="publication-ready">
-                    <p className="chapter-kicker">File accepted</p>
-                    <h1>{publication.displayName}</h1>
-                    <div className="ornament" aria-hidden="true">
-                      ◆
-                    </div>
-                    <p>
-                      This runtime does not have a chapter engine. Reopen the browser preview to
-                      read the selected EPUB.
-                    </p>
-                    <dl className="file-facts">
-                      <div>
-                        <dt>Size</dt>
-                        <dd>{formatFileSize(publication.fileSize)}</dd>
-                      </div>
-                      <div>
-                        <dt>Modified</dt>
-                        <dd>{formatDate(publication.lastModified)}</dd>
-                      </div>
-                    </dl>
-                  </div>
-                ) : publication?.availability === 'reselect-required' ? (
-                  <div className="publication-ready publication-ready--reselect">
-                    <p className="chapter-kicker">Browser source unavailable after refresh</p>
-                    <h1>Select this book again</h1>
-                    <p>
-                      NovelReaper remembered the preview metadata for{' '}
-                      <strong>{publication.displayName}</strong>, but browsers do not preserve
-                      unrestricted access to the original file.
-                    </p>
-                    <button
-                      className="button button--primary"
-                      type="button"
-                      disabled={isSelecting}
-                      onClick={() => void selectPublication()}
-                    >
-                      Select again
-                    </button>
-                  </div>
-                ) : (
-                  <div className="publication-ready publication-ready--empty">
-                    <p className="chapter-kicker">A quiet place for long-form reading</p>
-                    <h1>Your next chapter starts here.</h1>
-                    <div className="ornament" aria-hidden="true">
-                      ◆
-                    </div>
-                    <p>
-                      Choose a local EPUB to read its metadata, contents, and chapters without
-                      uploading or copying the source file.
-                    </p>
-                    <button
-                      className="button button--primary"
-                      type="button"
-                      disabled={isSelecting}
-                      onClick={() => void selectPublication()}
-                    >
-                      Open an EPUB
-                    </button>
-                  </div>
-                )}
-
-                {operationError ? (
-                  <div className="operation-message operation-message--error" role="alert">
-                    <strong>Could not open that publication</strong>
-                    <span>{operationError}</span>
-                    <button type="button" onClick={() => setOperationError(undefined)}>
-                      Dismiss
-                    </button>
-                  </div>
-                ) : null}
-                {readerError && browserReaderStatus === 'ready' ? (
-                  <div className="operation-message operation-message--error" role="alert">
-                    <strong>Chapter navigation failed</strong>
-                    <span>{readerError}</span>
-                    <button type="button" onClick={() => setReaderError(undefined)}>
-                      Dismiss
-                    </button>
-                  </div>
-                ) : null}
-              </div>
+              </>
+            ) : publication ? (
+              <article className="publication-card" aria-label="Selected publication">
+                <span className="publication-card__index" aria-hidden="true">
+                  01
+                </span>
+                <div>
+                  <strong>{publication.displayName}</strong>
+                  <small>{formatFileSize(publication.fileSize)}</small>
+                </div>
+              </article>
             ) : (
-              <span className="visually-hidden" aria-live="polite">
-                Reader status: {readerState.status}
-              </span>
+              <div className="contents-empty">
+                <span aria-hidden="true">—</span>
+                <p>No publication selected</p>
+              </div>
             )}
-          </div>
-        </section>
 
-        <aside className="shell-panel shell-panel--appearance" aria-label="Appearance preview">
-          <p className="eyebrow">Appearance</p>
-          <h2>Warm editorial</h2>
-          <p className="panel-intro">
-            EPUB chapters stay local and open one at a time. Typography controls arrive in a later
-            browser phase.
-          </p>
+            <button
+              className="button button--wide contents-open-button"
+              type="button"
+              disabled={!platform.capabilities.selectLocalPublication || isSelecting}
+              onClick={() => void selectPublication()}
+            >
+              {publication ? 'Choose another EPUB' : 'Choose an EPUB'}
+            </button>
 
-          <section className="environment-card" aria-label="Preview environment">
-            <span className="environment-card__number">B3</span>
-            <div>
-              <strong>{isBrowserPreview ? 'Strict EPUB reader' : 'Electron adapter'}</strong>
-              <p>
-                {isBrowserPreview
-                  ? parsedPublication
-                    ? `${parsedPublication.spineLength.toLocaleString()} sections · progress active`
-                    : 'Navigation · locators · progress'
-                  : 'Typed preload IPC'}
-              </p>
+            <dl className="capability-list">
+              <div>
+                <dt>Upload</dt>
+                <dd>None</dd>
+              </div>
+              <div>
+                <dt>File access</dt>
+                <dd>This tab only</dd>
+              </div>
+              <div>
+                <dt>Safety</dt>
+                <dd>Strict · offline</dd>
+              </div>
+            </dl>
+          </aside>
+
+          <section className="reader-column" aria-label="Reading surface">
+            <div
+              className={isBrowserPreview ? 'reader-frame reader-frame--browser' : 'reader-frame'}
+              ref={readerFrameRef}
+              data-testid="reader-frame"
+            >
+              {readerState.status === 'crashed' ? (
+                <div className="reader-fallback" role="alert">
+                  <p className="eyebrow">Reader isolated</p>
+                  <h2>The reading surface stopped responding.</h2>
+                  <p>{readerState.message ?? 'The application shell is still safe and usable.'}</p>
+                  <button type="button" disabled={!readerState.canRetry} onClick={recoverReader}>
+                    Restart reading surface
+                  </button>
+                </div>
+              ) : isBrowserPreview ? (
+                <div className="browser-reading-sheet">
+                  {publication?.availability === 'selected' && readerEngineFactory ? (
+                    <div className="reader-engine-stage">
+                      <div className="reader-engine-host" ref={browserReaderHostRef} />
+                      {browserReaderStatus === 'opening' ? (
+                        <div className="reader-engine-overlay" role="status">
+                          <div className="reader-skeleton" aria-label="Opening EPUB">
+                            <span />
+                            <span />
+                            <span />
+                          </div>
+                          <p>Preparing chapters in Strict mode…</p>
+                        </div>
+                      ) : null}
+                      {browserReaderStatus === 'error' ? (
+                        <div
+                          className="reader-engine-overlay reader-engine-overlay--error"
+                          role="alert"
+                        >
+                          <p className="chapter-kicker">Could not prepare this book</p>
+                          <h1>NovelReaper kept the file untouched.</h1>
+                          <p>{readerError}</p>
+                          <div className="reader-engine-overlay__actions">
+                            <button
+                              className="button button--primary"
+                              type="button"
+                              onClick={() => setReaderAttempt((attempt) => attempt + 1)}
+                            >
+                              Try again
+                            </button>
+                            <button type="button" onClick={() => void selectPublication()}>
+                              Choose another EPUB
+                            </button>
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : isBootstrapping && !publication ? (
+                    <div className="reader-skeleton" aria-label="Loading browser preview">
+                      <span />
+                      <span />
+                      <span />
+                    </div>
+                  ) : publication?.availability === 'selected' ? (
+                    <div className="publication-ready">
+                      <p className="chapter-kicker">File accepted</p>
+                      <h1>{publication.displayName}</h1>
+                      <div className="ornament" aria-hidden="true">
+                        ◆
+                      </div>
+                      <p>
+                        This runtime does not have a chapter engine. Reopen the browser preview to
+                        read the selected EPUB.
+                      </p>
+                      <dl className="file-facts">
+                        <div>
+                          <dt>Size</dt>
+                          <dd>{formatFileSize(publication.fileSize)}</dd>
+                        </div>
+                        <div>
+                          <dt>Modified</dt>
+                          <dd>{formatDate(publication.lastModified)}</dd>
+                        </div>
+                      </dl>
+                    </div>
+                  ) : publication?.availability === 'reselect-required' ? (
+                    <div className="publication-ready publication-ready--reselect">
+                      <p className="chapter-kicker">Browser source unavailable after refresh</p>
+                      <h1>Select this book again</h1>
+                      <p>
+                        NovelReaper remembered the preview metadata for{' '}
+                        <strong>{publication.displayName}</strong>, but browsers do not preserve
+                        unrestricted access to the original file.
+                      </p>
+                      <button
+                        className="button button--primary"
+                        type="button"
+                        disabled={isSelecting}
+                        onClick={() => void selectPublication()}
+                      >
+                        Select again
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="publication-ready publication-ready--empty">
+                      <p className="chapter-kicker">A quiet place for long-form reading</p>
+                      <h1>Your next chapter starts here.</h1>
+                      <div className="ornament" aria-hidden="true">
+                        ◆
+                      </div>
+                      <p>
+                        Choose a local EPUB to read its metadata, contents, and chapters without
+                        uploading or copying the source file.
+                      </p>
+                      <button
+                        className="button button--primary"
+                        type="button"
+                        disabled={isSelecting}
+                        onClick={() => void selectPublication()}
+                      >
+                        Open an EPUB
+                      </button>
+                    </div>
+                  )}
+
+                  {operationError ? (
+                    <div className="operation-message operation-message--error" role="alert">
+                      <strong>Could not open that publication</strong>
+                      <span>{operationError}</span>
+                      <button type="button" onClick={() => setOperationError(undefined)}>
+                        Dismiss
+                      </button>
+                    </div>
+                  ) : null}
+                  {readerError && browserReaderStatus === 'ready' ? (
+                    <div className="operation-message operation-message--error" role="alert">
+                      <strong>Chapter navigation failed</strong>
+                      <span>{readerError}</span>
+                      <button type="button" onClick={() => setReaderError(undefined)}>
+                        Dismiss
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              ) : (
+                <span className="visually-hidden" aria-live="polite">
+                  Reader status: {readerState.status}
+                </span>
+              )}
             </div>
           </section>
 
-          <ol className="phase-steps">
-            <li>
-              <span>01</span>
-              <div>
-                <strong>Select locally</strong>
-                <p>No upload or managed copy.</p>
-              </div>
-            </li>
-            <li>
-              <span>02</span>
-              <div>
-                <strong>Read locally</strong>
-                <p>Metadata, TOC, and one chapter at a time.</p>
-              </div>
-            </li>
-            <li className="phase-steps__active">
-              <span>03</span>
-              <div>
-                <strong>Navigate and resume</strong>
-                <p>Progress, restoration, and end controls.</p>
-              </div>
-            </li>
-          </ol>
+          <AppearancePanel
+            appearance={preferences.appearance}
+            mode={preferences.mode}
+            busy={isApplyingAppearance || browserReaderStatus === 'opening'}
+            fullscreenAvailable={platform.capabilities.fullscreen}
+            isFullscreen={windowState.isFullScreen}
+            notices={notices}
+            onAppearanceChange={changeAppearance}
+            onModeChange={changeMode}
+            onToggleFullscreen={toggleFullscreen}
+          />
+        </main>
+      )}
 
-          {notices.map((notice) => (
-            <div className="operation-message" role="status" key={notice}>
-              {notice}
-            </div>
-          ))}
-        </aside>
-      </main>
-
-      <footer className="statusbar">
-        <span>Environment: {isBrowserPreview ? 'Browser' : 'Electron'}</span>
-        <span>
-          Overall: {readerProgress ? `${Math.round(overallProgress(readerProgress) * 100)}%` : '—'}
-        </span>
-        <span>
-          Chapter: {readerLocation ? `${Math.round(readerLocation.fractionInChapter * 100)}%` : '—'}
-        </span>
-        <span>Source: {publicationStatus}</span>
-      </footer>
+      {screen === 'reader' ? (
+        <footer className="statusbar" aria-label="Reading progress">
+          <span className="statusbar__label">Overall progress</span>
+          <strong>{readerProgress ? `${overallPercent}%` : '—'}</strong>
+          <div
+            className="statusbar__track"
+            role="progressbar"
+            aria-label="Overall reading progress"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={overallPercent}
+          >
+            <span style={{ width: `${overallPercent}%` }} />
+          </div>
+          <span className="statusbar__chapter">
+            Chapter {readerLocation ? `${chapterPercent}%` : '—'}
+          </span>
+          <span className="visually-hidden">
+            {isBrowserPreview ? 'Browser' : 'Electron'} · source {publicationStatus}
+          </span>
+        </footer>
+      ) : null}
 
       {bootstrapError ? (
         <div className="bootstrap-error" role="alert">

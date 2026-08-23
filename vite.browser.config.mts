@@ -28,6 +28,14 @@ export default defineConfig({
   root: resolve(import.meta.dirname, 'src/browser-preview'),
   base: './',
   plugins: [foliateEpubOnlyCompatibility(), react()],
+  // Windows tools can keep Vite's generated source maps open, which prevents
+  // the optimizer from replacing node_modules/.vite on the next startup.
+  // NovelReaper's browser dependencies are ESM, so serving them directly keeps
+  // development reliable without changing production bundling.
+  optimizeDeps: {
+    noDiscovery: true,
+    include: [],
+  },
   server: {
     host: '127.0.0.1',
     port: 5173,

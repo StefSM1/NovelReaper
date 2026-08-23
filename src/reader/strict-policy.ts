@@ -4,7 +4,7 @@ export const STRICT_EPUB_CSP = [
   "default-src 'none'",
   'img-src blob: data:',
   'media-src blob: data:',
-  'font-src blob: data:',
+  "font-src 'self' blob: data:",
   "style-src 'unsafe-inline' blob:",
   "script-src 'none'",
   "connect-src 'none'",
