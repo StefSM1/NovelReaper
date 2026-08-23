@@ -43,6 +43,12 @@ export const READER_FONT_CSS: Record<ReaderFontFamily, string> = {
   'atkinson-hyperlegible': "'Atkinson Hyperlegible', system-ui, sans-serif",
 };
 
+export const READER_PARAGRAPH_GAP_EM: Record<ReaderLineHeight, number> = {
+  1.4: 0.65,
+  1.6: 1,
+  1.8: 1.35,
+};
+
 export function normalizeReaderAppearance(
   settings: ReaderAppearanceSettings,
 ): ReaderAppearanceSettings {

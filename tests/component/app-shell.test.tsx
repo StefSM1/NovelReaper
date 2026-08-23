@@ -271,7 +271,7 @@ describe('shared NovelReaper application shell', () => {
     vi.mocked(platform.selectPublication).mockRejectedValue(
       new PlatformOperationError('INVALID_ZIP_SIGNATURE', 'Choose a valid EPUB file.'),
     );
-    await user.click(screen.getByRole('button', { name: 'Choose another EPUB' }));
+    await user.click(screen.getByRole('button', { name: 'Open EPUB' }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Choose a valid EPUB file.');
     expect(screen.getByRole('heading', { name: 'Calm Book' })).toBeVisible();
@@ -317,7 +317,7 @@ describe('shared NovelReaper application shell', () => {
     await user.click(await screen.findByRole('button', { name: 'Open EPUB' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('file untouched');
     expect(screen.getByRole('button', { name: 'Try again' })).toBeEnabled();
-    expect(screen.getAllByRole('button', { name: 'Choose another EPUB' })).toHaveLength(2);
+    expect(screen.getByRole('button', { name: 'Choose another EPUB' })).toBeEnabled();
   });
 
   it('applies and persists reader appearance and focus mode', async () => {
@@ -351,6 +351,11 @@ describe('shared NovelReaper application shell', () => {
       expect.objectContaining({ theme: 'dark' }),
     );
     expect(document.querySelector('.app')).toHaveClass('app--dark');
+
+    await user.click(screen.getByRole('button', { name: 'Compact line spacing' }));
+    expect(engine.applyAppearance).toHaveBeenLastCalledWith(
+      expect.objectContaining({ lineHeight: 1.4 }),
+    );
 
     await user.click(screen.getByRole('switch', { name: 'Toggle focus mode' }));
     expect(document.querySelector('.app')).toHaveClass('app--focus');

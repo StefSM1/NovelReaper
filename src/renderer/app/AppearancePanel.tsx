@@ -23,6 +23,18 @@ interface AppearancePanelProps {
 const LINE_HEIGHTS: ReaderLineHeight[] = [1.4, 1.6, 1.8];
 const PAGE_WIDTHS: ReaderPageWidth[] = [54, 68, 82];
 
+const LINE_HEIGHT_LABELS: Record<ReaderLineHeight, string> = {
+  1.4: 'Compact',
+  1.6: 'Standard',
+  1.8: 'Relaxed',
+};
+
+const PAGE_WIDTH_LABELS: Record<ReaderPageWidth, string> = {
+  54: 'Narrow',
+  68: 'Comfort',
+  82: 'Wide',
+};
+
 export function AppearancePanel({
   appearance,
   mode,
@@ -38,8 +50,7 @@ export function AppearancePanel({
 
   return (
     <aside className="shell-panel shell-panel--appearance" aria-label="Appearance">
-      <p className="eyebrow">Appearance</p>
-      <h2>Warm editorial</h2>
+      <h2>Appearance</h2>
 
       <div className="appearance-control">
         <span className="appearance-control__label">Theme</span>
@@ -108,10 +119,21 @@ export function AppearancePanel({
               type="button"
               className={appearance.lineHeight === lineHeight ? 'is-selected' : ''}
               aria-pressed={appearance.lineHeight === lineHeight}
+              aria-label={`${LINE_HEIGHT_LABELS[lineHeight]} line spacing`}
+              title={LINE_HEIGHT_LABELS[lineHeight]}
               disabled={busy}
               onClick={() => onAppearanceChange({ lineHeight })}
             >
-              {lineHeight}
+              <span
+                className={`line-spacing-glyph line-spacing-glyph--${LINE_HEIGHT_LABELS[
+                  lineHeight
+                ].toLocaleLowerCase()}`}
+                aria-hidden="true"
+              >
+                <i />
+                <i />
+                <i />
+              </span>
             </button>
           ))}
         </div>
@@ -126,10 +148,17 @@ export function AppearancePanel({
               type="button"
               className={appearance.pageWidthCh === pageWidthCh ? 'is-selected' : ''}
               aria-pressed={appearance.pageWidthCh === pageWidthCh}
+              aria-label={`${PAGE_WIDTH_LABELS[pageWidthCh]} page width`}
+              title={PAGE_WIDTH_LABELS[pageWidthCh]}
               disabled={busy}
               onClick={() => onAppearanceChange({ pageWidthCh })}
             >
-              {pageWidthCh === 54 ? 'Narrow' : pageWidthCh === 68 ? 'Comfort' : 'Wide'}
+              <span
+                className={`page-width-glyph page-width-glyph--${PAGE_WIDTH_LABELS[
+                  pageWidthCh
+                ].toLocaleLowerCase()}`}
+                aria-hidden="true"
+              />
             </button>
           ))}
         </div>

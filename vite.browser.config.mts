@@ -1,4 +1,6 @@
+import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 
 import react from '@vitejs/plugin-react';
 import { defineConfig, type Plugin } from 'vite';
@@ -28,14 +30,10 @@ export default defineConfig({
   root: resolve(import.meta.dirname, 'src/browser-preview'),
   base: './',
   plugins: [foliateEpubOnlyCompatibility(), react()],
-  // Windows tools can keep Vite's generated source maps open, which prevents
-  // the optimizer from replacing node_modules/.vite on the next startup.
-  // NovelReaper's browser dependencies are ESM, so serving them directly keeps
-  // development reliable without changing production bundling.
-  optimizeDeps: {
-    noDiscovery: true,
-    include: [],
-  },
+  // React's CommonJS runtime must be optimized before the browser can load it.
+  // A fresh Windows temp cache per launch prevents another editor or Vite process
+  // from locking the files that a later launch needs to replace.
+  cacheDir: resolve(tmpdir(), `novelreaper-vite-${randomUUID()}`),
   server: {
     host: '127.0.0.1',
     port: 5173,

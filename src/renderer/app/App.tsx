@@ -515,71 +515,59 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
       ) : (
         <main className="shell-content">
           <aside className="shell-panel shell-panel--contents" aria-label="Contents preview">
-            <p className="eyebrow">Contents</p>
-            <h2>{parsedPublication?.metadata.title ?? 'Library preview'}</h2>
-            <p className="panel-intro">
-              {parsedPublication?.metadata.author
-                ? parsedPublication.metadata.author
-                : 'Select a local EPUB to read it chapter by chapter in Strict mode.'}
-            </p>
-
-            {parsedPublication ? (
-              <>
-                {parsedPublication.metadata.coverUrl ? (
-                  <img
-                    className="publication-cover"
-                    src={parsedPublication.metadata.coverUrl}
-                    alt=""
-                  />
-                ) : null}
-                <VirtualizedToc
-                  items={parsedPublication.toc}
-                  location={readerLocation}
-                  progress={readerProgress}
-                  busy={isNavigating}
-                  onOpen={(item) => void openTocItem(item)}
+            <section className="publication-summary" aria-label="Current publication">
+              {parsedPublication?.metadata.coverUrl ? (
+                <img
+                  className="publication-cover"
+                  src={parsedPublication.metadata.coverUrl}
+                  alt=""
                 />
-              </>
-            ) : publication ? (
-              <article className="publication-card" aria-label="Selected publication">
-                <span className="publication-card__index" aria-hidden="true">
-                  01
+              ) : (
+                <span className="publication-cover-placeholder" aria-hidden="true">
+                  NR
                 </span>
-                <div>
-                  <strong>{publication.displayName}</strong>
-                  <small>{formatFileSize(publication.fileSize)}</small>
+              )}
+              <div className="publication-summary__text">
+                <h2>
+                  {parsedPublication?.metadata.title ??
+                    publication?.displayName.replace(/\.epub$/i, '') ??
+                    'No book selected'}
+                </h2>
+                <p>
+                  {parsedPublication?.metadata.author ??
+                    (publication ? 'Preparing book details…' : 'Open an EPUB to begin')}
+                </p>
+              </div>
+            </section>
+
+            <section className="contents-region" aria-label="Chapter contents">
+              <header className="contents-region__header">
+                <h2>Contents</h2>
+                {parsedPublication ? (
+                  <span>{parsedPublication.spineLength.toLocaleString()}</span>
+                ) : null}
+              </header>
+
+              {parsedPublication ? (
+                <>
+                  <VirtualizedToc
+                    items={parsedPublication.toc}
+                    location={readerLocation}
+                    progress={readerProgress}
+                    busy={isNavigating}
+                    onOpen={(item) => void openTocItem(item)}
+                  />
+                  <p className="contents-count">
+                    {parsedPublication.spineLength.toLocaleString()} chapters
+                  </p>
+                </>
+              ) : (
+                <div className="contents-empty">
+                  <span aria-hidden="true">—</span>
+                  <p>{publication ? 'Preparing contents…' : 'No chapters to show'}</p>
                 </div>
-              </article>
-            ) : (
-              <div className="contents-empty">
-                <span aria-hidden="true">—</span>
-                <p>No publication selected</p>
-              </div>
-            )}
-
-            <button
-              className="button button--wide contents-open-button"
-              type="button"
-              disabled={!platform.capabilities.selectLocalPublication || isSelecting}
-              onClick={() => void selectPublication()}
-            >
-              {publication ? 'Choose another EPUB' : 'Choose an EPUB'}
-            </button>
-
-            <dl className="capability-list">
-              <div>
-                <dt>Upload</dt>
-                <dd>None</dd>
-              </div>
-              <div>
-                <dt>File access</dt>
-                <dd>This tab only</dd>
-              </div>
-              <div>
-                <dt>Safety</dt>
-                <dd>Strict · offline</dd>
-              </div>
-            </dl>
+              )}
+            </section>
           </aside>
 
           <section className="reader-column" aria-label="Reading surface">

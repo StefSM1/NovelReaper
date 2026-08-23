@@ -73,7 +73,6 @@ export function VirtualizedToc({
 
   return (
     <nav className="toc" aria-label="Table of contents" aria-busy={busy}>
-      <p className="toc__heading">Chapters</p>
       <div
         className="toc__viewport"
         ref={viewportRef}

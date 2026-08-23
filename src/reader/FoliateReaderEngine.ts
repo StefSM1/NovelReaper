@@ -10,6 +10,7 @@ import {
   DEFAULT_READER_APPEARANCE,
   normalizeReaderAppearance,
   READER_FONT_CSS,
+  READER_PARAGRAPH_GAP_EM,
   type ReaderAppearanceSettings,
 } from './appearance';
 import {
@@ -47,6 +48,7 @@ function readingStyle(settings: ReaderAppearanceSettings): string {
   const heading = dark ? '#ffffff' : '#1f2826';
   const neutral = dark ? '#a3a7a2' : '#8f918d';
   const divider = dark ? '#555b57' : '#d9cdbf';
+  const paragraphGap = READER_PARAGRAPH_GAP_EM[settings.lineHeight];
   return `
   ${FONT_FACE_STYLE}
   :root { color-scheme: ${dark ? 'dark' : 'light'}; background: ${paper}; }
@@ -60,10 +62,18 @@ function readingStyle(settings: ReaderAppearanceSettings): string {
     background: ${paper} !important;
     font-family: ${READER_FONT_CSS[settings.fontFamily]} !important;
     font-size: ${settings.fontSizePx}px !important;
+    font-stretch: normal !important;
     line-height: ${settings.lineHeight} !important;
+    letter-spacing: normal !important;
+    word-spacing: normal !important;
   }
   h1, h2, h3, h4 { color: ${heading} !important; line-height: 1.25 !important; }
-  p { margin-block: 0 1.35em; }
+  p, li, blockquote {
+    font-stretch: normal !important;
+    letter-spacing: normal !important;
+    word-spacing: normal !important;
+  }
+  p { margin-block: 0 ${paragraphGap}em !important; line-height: inherit !important; }
   img, svg, video { max-width: 100% !important; height: auto !important; }
   .novelreaper-chapter-navigation {
     display: flex;
