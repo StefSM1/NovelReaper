@@ -1,10 +1,12 @@
 import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import axe from 'axe-core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type {
   NovelReaperPlatform,
   PlatformCapabilities,
+  PublicationDescriptor,
   PublicationSelectionResult,
 } from '../../src/platform/contracts';
 import { PlatformOperationError } from '../../src/platform/contracts';
@@ -83,6 +85,7 @@ function createReaderEngine(options?: { openError?: Error }): FakeReaderEngine {
 
 function createPlatform(options?: {
   environment?: 'browser-preview' | 'electron';
+  library?: PublicationDescriptor[];
   selection?: PublicationSelectionResult;
 }): FakePlatform {
   let readerListener: ((state: ReaderStateSnapshot) => void) | undefined;
@@ -110,7 +113,7 @@ function createPlatform(options?: {
         canRetry: false,
       },
       window: { isMaximized: false, isFullScreen: false },
-      library: [],
+      library: options?.library ?? [],
       notices: [],
     }),
     selectPublication: vi.fn().mockResolvedValue(
@@ -359,7 +362,84 @@ describe('shared NovelReaper application shell', () => {
 
     await user.click(screen.getByRole('switch', { name: 'Toggle focus mode' }));
     expect(document.querySelector('.app')).toHaveClass('app--focus');
+    const focusExit = document.querySelector('.focus-exit');
+    expect(focusExit).toHaveTextContent('Exit focus');
     expect(window.localStorage.getItem('novelreaper:browser-settings:v1')).toContain('"focus"');
+
+    if (!(focusExit instanceof HTMLButtonElement)) throw new Error('Focus exit control missing.');
+    await user.click(focusExit);
+    expect(document.querySelector('.app')).not.toHaveClass('app--focus');
+  });
+
+  it('keeps Contents, reading, and Appearance reachable through the compact reader navigation', async () => {
+    const user = userEvent.setup();
+    const file = new File([new Uint8Array([0x50, 0x4b, 0x03, 0x04])], 'Calm.epub', {
+      type: 'application/epub+zip',
+    });
+    const platform = createPlatform({
+      environment: 'browser-preview',
+      selection: {
+        status: 'selected',
+        publication: {
+          id: 'f4cc55dc-c548-4780-b384-0c663bfdb14f',
+          displayName: file.name,
+          fileSize: file.size,
+          lastModified: file.lastModified,
+          mimeType: file.type,
+          availability: 'selected',
+          file,
+        },
+      },
+    });
+    render(<App platform={platform} readerEngineFactory={() => createReaderEngine()} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Open EPUB' }));
+    await screen.findByRole('heading', { name: 'Calm Book' });
+    expect(document.querySelector('.app')).toHaveClass('app--mobile-reader');
+
+    await user.click(screen.getByRole('button', { name: 'Contents', pressed: false }));
+    expect(document.querySelector('.app')).toHaveClass('app--mobile-contents');
+    await user.click(screen.getByRole('button', { name: 'Appearance', pressed: false }));
+    expect(document.querySelector('.app')).toHaveClass('app--mobile-appearance');
+
+    await user.keyboard('{Escape}');
+    expect(document.querySelector('.app')).toHaveClass('app--mobile-reader');
+  });
+
+  it('shows a real loading state before an empty library is known', () => {
+    const platform = createPlatform({ environment: 'browser-preview' });
+    vi.mocked(platform.getBootstrapState).mockReturnValue(new Promise(() => undefined));
+
+    render(<App platform={platform} readerEngineFactory={() => createReaderEngine()} />);
+
+    expect(screen.getByRole('status', { name: 'Loading library' })).toBeVisible();
+    expect(screen.getByRole('heading', { name: 'Opening your library…' })).toBeVisible();
+    expect(screen.queryByRole('heading', { name: 'No volumes yet' })).not.toBeInTheDocument();
+  });
+
+  it('requires confirmation before removing a remembered library card', async () => {
+    const user = userEvent.setup();
+    const entry: PublicationDescriptor = {
+      id: 'remembered-book',
+      displayName: 'Remembered.epub',
+      title: 'Remembered Book',
+      fileSize: 1024,
+      lastModified: 1_700_000_000_000,
+      mimeType: 'application/epub+zip',
+      availability: 'reselect-required',
+    };
+    const platform = createPlatform({ environment: 'browser-preview', library: [entry] });
+    render(<App platform={platform} readerEngineFactory={() => createReaderEngine()} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Remove' }));
+    expect(platform.removeLibraryPublication).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole('group', { name: 'Remove Remembered Book from the library' }),
+    ).toBeVisible();
+
+    await user.click(screen.getByRole('button', { name: 'Remove card' }));
+    expect(platform.removeLibraryPublication).toHaveBeenCalledWith('remembered-book');
+    expect(await screen.findByRole('heading', { name: 'No volumes yet' })).toBeVisible();
   });
 
   it('keeps the library usable when the dormant Electron reader reports a crash', async () => {
@@ -380,5 +460,49 @@ describe('shared NovelReaper application shell', () => {
     expect(
       screen.queryByRole('button', { name: 'Restart reading surface' }),
     ).not.toBeInTheDocument();
+  });
+
+  it('has no automatically detectable WCAG A/AA structure violations on the Library screen', async () => {
+    render(<App platform={createPlatform({ environment: 'browser-preview' })} />);
+    await screen.findByRole('heading', { name: 'No volumes yet' });
+
+    const result = await axe.run(document.body, {
+      runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'] },
+      rules: { 'color-contrast': { enabled: false } },
+    });
+
+    expect(result.violations).toEqual([]);
+  });
+
+  it('has no automatically detectable WCAG A/AA structure violations in the reader shell', async () => {
+    const user = userEvent.setup();
+    const file = new File([new Uint8Array([0x50, 0x4b, 0x03, 0x04])], 'Calm.epub', {
+      type: 'application/epub+zip',
+    });
+    const platform = createPlatform({
+      environment: 'browser-preview',
+      selection: {
+        status: 'selected',
+        publication: {
+          id: 'reader-accessibility-check',
+          displayName: file.name,
+          fileSize: file.size,
+          lastModified: file.lastModified,
+          mimeType: file.type,
+          availability: 'selected',
+          file,
+        },
+      },
+    });
+    render(<App platform={platform} readerEngineFactory={() => createReaderEngine()} />);
+    await user.click(await screen.findByRole('button', { name: 'Open EPUB' }));
+    await screen.findByRole('heading', { name: 'Calm Book' });
+
+    const result = await axe.run(document.body, {
+      runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'] },
+      rules: { 'color-contrast': { enabled: false } },
+    });
+
+    expect(result.violations).toEqual([]);
   });
 });

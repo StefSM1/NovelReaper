@@ -49,7 +49,9 @@ export default defineConfig({
   },
   build: {
     outDir: resolve(import.meta.dirname, 'dist/browser-preview'),
-    emptyOutDir: true,
+    // Assets are content-hashed. Keeping prior output avoids Windows EPERM when
+    // an editor, scanner, or preview process briefly retains an old font handle.
+    emptyOutDir: false,
     sourcemap: true,
   },
 });

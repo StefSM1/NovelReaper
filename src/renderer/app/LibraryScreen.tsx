@@ -1,13 +1,16 @@
+import { useState } from 'react';
+
 import type { PublicationDescriptor } from '../../platform/contracts';
 
 interface LibraryScreenProps {
   entries: PublicationDescriptor[];
+  isLoading: boolean;
   isSelecting: boolean;
   error: string | undefined;
   hasSessionFile: (id: string) => boolean;
   onOpenNew: () => void;
   onOpenEntry: (entry: PublicationDescriptor) => void;
-  onRemoveEntry: (entry: PublicationDescriptor) => void;
+  onRemoveEntry: (entry: PublicationDescriptor) => Promise<boolean>;
   onDismissError: () => void;
 }
 
@@ -17,6 +20,7 @@ function formatSections(count: number | undefined): string {
 
 export function LibraryScreen({
   entries,
+  isLoading,
   isSelecting,
   error,
   hasSessionFile,
@@ -25,6 +29,17 @@ export function LibraryScreen({
   onRemoveEntry,
   onDismissError,
 }: LibraryScreenProps): React.JSX.Element {
+  const [pendingRemovalId, setPendingRemovalId] = useState<string>();
+  const [removingId, setRemovingId] = useState<string>();
+
+  const confirmRemoval = async (entry: PublicationDescriptor): Promise<void> => {
+    if (removingId) return;
+    setRemovingId(entry.id);
+    const removed = await onRemoveEntry(entry);
+    setRemovingId(undefined);
+    if (removed) setPendingRemovalId(undefined);
+  };
+
   return (
     <main className="library-screen">
       <header className="library-screen__header">
@@ -51,7 +66,19 @@ export function LibraryScreen({
         </div>
       ) : null}
 
-      {entries.length ? (
+      {isLoading && !entries.length ? (
+        <section className="library-loading" role="status" aria-label="Loading library">
+          <span className="library-loading__mark" aria-hidden="true">
+            NR
+          </span>
+          <h2>Opening your library…</h2>
+          <div className="library-loading__lines" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </div>
+        </section>
+      ) : entries.length ? (
         <ul className="library-grid" aria-label="Saved publications">
           {entries.map((entry, index) => {
             const ready = hasSessionFile(entry.id);
@@ -69,13 +96,43 @@ export function LibraryScreen({
                     <button
                       className="button button--primary"
                       type="button"
+                      disabled={isSelecting || Boolean(removingId)}
                       onClick={() => onOpenEntry(entry)}
                     >
                       {ready ? 'Resume' : 'Select again'}
                     </button>
-                    <button type="button" onClick={() => onRemoveEntry(entry)}>
-                      Remove
-                    </button>
+                    {pendingRemovalId === entry.id ? (
+                      <div
+                        className="library-book__remove-confirmation"
+                        role="group"
+                        aria-label={`Remove ${entry.title ?? entry.displayName} from the library`}
+                      >
+                        <span role="status">Remove card?</span>
+                        <button
+                          type="button"
+                          disabled={removingId === entry.id}
+                          onClick={() => setPendingRemovalId(undefined)}
+                        >
+                          Keep
+                        </button>
+                        <button
+                          className="button--danger"
+                          type="button"
+                          disabled={removingId === entry.id}
+                          onClick={() => void confirmRemoval(entry)}
+                        >
+                          {removingId === entry.id ? 'Removing…' : 'Remove card'}
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={isSelecting || Boolean(removingId)}
+                        onClick={() => setPendingRemovalId(entry.id)}
+                      >
+                        Remove
+                      </button>
+                    )}
                   </div>
                 </div>
               </li>
@@ -93,7 +150,7 @@ export function LibraryScreen({
             disabled={isSelecting}
             onClick={onOpenNew}
           >
-            Choose an EPUB
+            {isSelecting ? 'Opening…' : 'Choose an EPUB'}
           </button>
         </section>
       )}

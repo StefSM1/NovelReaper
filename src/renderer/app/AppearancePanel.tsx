@@ -54,7 +54,7 @@ export function AppearancePanel({
 
       <div className="appearance-control">
         <span className="appearance-control__label">Theme</span>
-        <div className="segmented-control" aria-label="Theme">
+        <div className="segmented-control" role="group" aria-label="Theme">
           {(['light', 'dark'] as const).map((theme) => (
             <button
               key={theme}

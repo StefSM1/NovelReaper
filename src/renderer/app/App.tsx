@@ -84,6 +84,7 @@ function upsertLibraryEntry(
 
 type BrowserReaderStatus = 'idle' | 'opening' | 'ready' | 'error';
 type AppScreen = 'library' | 'reader';
+type MobileReaderView = 'appearance' | 'contents' | 'reader';
 
 export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Element {
   const readerFrameRef = useRef<HTMLDivElement>(null);
@@ -100,6 +101,7 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
     isFullScreen: false,
   });
   const [screen, setScreen] = useState<AppScreen>('library');
+  const [mobileReaderView, setMobileReaderView] = useState<MobileReaderView>('reader');
   const [library, setLibrary] = useState<PublicationDescriptor[]>([]);
   const [publication, setPublication] = useState<PublicationDescriptor | SelectedPublication>();
   const [parsedPublication, setParsedPublication] = useState<ReaderPublication>();
@@ -303,6 +305,7 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
 
   const changeMode = useCallback(
     (mode: BrowserReaderPreferences['mode']): void => {
+      setMobileReaderView('reader');
       commitPreferences({ ...preferencesRef.current, mode });
     },
     [commitPreferences],
@@ -324,11 +327,13 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
 
   useEffect(() => {
     const handleEscape = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') changeMode('dashboard');
+      if (event.key !== 'Escape') return;
+      if (mobileReaderView !== 'reader') setMobileReaderView('reader');
+      else changeMode('dashboard');
     };
     window.addEventListener('keydown', handleEscape);
     return () => window.removeEventListener('keydown', handleEscape);
-  }, [changeMode]);
+  }, [changeMode, mobileReaderView]);
 
   const reportReaderBounds = useCallback(() => {
     if (platform.environment !== 'electron') return;
@@ -376,6 +381,7 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
           upsertLibraryEntry(current, descriptorFromSelection(result.publication)),
         );
         setPublication(result.publication);
+        setMobileReaderView('reader');
         setScreen('reader');
         const warning = result.warning;
         if (warning) {
@@ -397,24 +403,31 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
       return;
     }
     setPublication(selected);
+    setMobileReaderView('reader');
     setScreen('reader');
   };
 
-  const removeLibraryEntry = (entry: PublicationDescriptor): void => {
-    sessionPublicationsRef.current.delete(entry.id);
-    setLibrary((current) => current.filter((item) => item.id !== entry.id));
-    if (publication?.id === entry.id) {
-      browserReaderEngineRef.current?.destroy();
-      setPublication(undefined);
-      setParsedPublication(undefined);
-      setReaderProgress(undefined);
-      setReaderLocation(undefined);
-      setScreen('library');
+  const removeLibraryEntry = async (entry: PublicationDescriptor): Promise<boolean> => {
+    setOperationError(undefined);
+    try {
+      const entries = await platform.removeLibraryPublication(entry.id);
+      sessionPublicationsRef.current.delete(entry.id);
+      setLibrary(
+        entries.length ? entries : (current) => current.filter((item) => item.id !== entry.id),
+      );
+      if (publication?.id === entry.id) {
+        browserReaderEngineRef.current?.destroy();
+        setPublication(undefined);
+        setParsedPublication(undefined);
+        setReaderProgress(undefined);
+        setReaderLocation(undefined);
+        setScreen('library');
+      }
+      return true;
+    } catch {
+      setOperationError('That library card could not be removed.');
+      return false;
     }
-    void platform
-      .removeLibraryPublication(entry.id)
-      .then((entries) => setLibrary(entries))
-      .catch(() => setOperationError('That library card could not be removed.'));
   };
 
   const toggleFullscreen = (): void => {
@@ -436,6 +449,7 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
         source: 'contents',
         target: item.target,
       });
+      setMobileReaderView('reader');
     } catch (error) {
       setReaderError(navigationErrorMessage(error));
     }
@@ -465,6 +479,7 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
     'app',
     isFocusMode ? 'app--focus' : '',
     screen === 'library' ? 'app--library' : '',
+    screen === 'reader' ? `app--mobile-${mobileReaderView}` : '',
     preferences.appearance.theme === 'dark' ? 'app--dark' : '',
   ]
     .filter(Boolean)
@@ -481,12 +496,19 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
         </div>
         <nav className="titlebar__actions" aria-label="Reader controls">
           {screen === 'reader' ? (
-            <button type="button" onClick={() => setScreen('library')}>
+            <button
+              className="titlebar__library"
+              type="button"
+              onClick={() => {
+                setMobileReaderView('reader');
+                setScreen('library');
+              }}
+            >
               Library
             </button>
           ) : null}
           <button
-            className="button button--primary"
+            className="button button--primary titlebar__open"
             type="button"
             disabled={!platform.capabilities.selectLocalPublication || isSelecting}
             onClick={() => void selectPublication()}
@@ -494,7 +516,11 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
             {isSelecting ? 'Opening…' : 'Open EPUB'}
           </button>
           {screen === 'reader' && publication ? (
-            <button type="button" onClick={() => changeMode(isFocusMode ? 'dashboard' : 'focus')}>
+            <button
+              className="titlebar__focus"
+              type="button"
+              onClick={() => changeMode(isFocusMode ? 'dashboard' : 'focus')}
+            >
               {isFocusMode ? 'Exit focus' : 'Focus mode'}
             </button>
           ) : null}
@@ -504,6 +530,7 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
       {screen === 'library' ? (
         <LibraryScreen
           entries={library}
+          isLoading={isBootstrapping}
           isSelecting={isSelecting}
           error={operationError}
           hasSessionFile={(id) => sessionPublicationsRef.current.has(id)}
@@ -733,6 +760,28 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
       )}
 
       {screen === 'reader' ? (
+        <nav className="mobile-reader-tabs" aria-label="Reader sections">
+          {(
+            [
+              ['contents', 'Contents'],
+              ['reader', 'Read'],
+              ['appearance', 'Appearance'],
+            ] as const
+          ).map(([view, label]) => (
+            <button
+              key={view}
+              type="button"
+              className={mobileReaderView === view ? 'is-selected' : ''}
+              aria-pressed={mobileReaderView === view}
+              onClick={() => setMobileReaderView(view)}
+            >
+              {label}
+            </button>
+          ))}
+        </nav>
+      ) : null}
+
+      {screen === 'reader' ? (
         <footer className="statusbar" aria-label="Reading progress">
           <span className="statusbar__label">Overall progress</span>
           <strong>{readerProgress ? `${overallPercent}%` : '—'}</strong>
@@ -753,6 +802,12 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
             {isBrowserPreview ? 'Browser' : 'Electron'} · source {publicationStatus}
           </span>
         </footer>
+      ) : null}
+
+      {isFocusMode ? (
+        <button className="focus-exit" type="button" onClick={() => changeMode('dashboard')}>
+          Exit focus
+        </button>
       ) : null}
 
       {bootstrapError ? (
