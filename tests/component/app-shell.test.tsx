@@ -1,4 +1,4 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import axe from 'axe-core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -41,6 +41,7 @@ function createReaderEngine(options?: { openError?: Error }): FakeReaderEngine {
   let listener: ((event: ReaderEngineEvent) => void) | undefined;
   return {
     applyAppearance: vi.fn().mockResolvedValue(undefined),
+    applySafetyLevel: vi.fn().mockResolvedValue(undefined),
     open: vi.fn((_source, container) => {
       if (options?.openError) return Promise.reject(options.openError);
       const surface = document.createElement('div');
@@ -404,6 +405,87 @@ describe('shared NovelReaper application shell', () => {
 
     await user.keyboard('{Escape}');
     expect(document.querySelector('.app')).toHaveClass('app--mobile-reader');
+  });
+
+  it('rebuilds the detached reader and restores its locator after Library Resume', async () => {
+    const user = userEvent.setup();
+    const file = new File([new Uint8Array([0x50, 0x4b, 0x03, 0x04])], 'Calm.epub', {
+      type: 'application/epub+zip',
+    });
+    const platform = createPlatform({
+      environment: 'browser-preview',
+      selection: {
+        status: 'selected',
+        publication: {
+          id: 'resume-lifecycle-book',
+          displayName: file.name,
+          fileSize: file.size,
+          lastModified: file.lastModified,
+          mimeType: file.type,
+          availability: 'selected',
+          file,
+        },
+      },
+    });
+    const engines = [createReaderEngine(), createReaderEngine()];
+    let nextEngine = 0;
+    const factory = vi.fn(() => engines[nextEngine++] ?? createReaderEngine());
+    render(<App platform={platform} readerEngineFactory={factory} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Open EPUB' }));
+    await screen.findByText('Rendered chapter');
+    await user.click(screen.getByRole('button', { name: 'Library' }));
+    await waitFor(() => expect(engines[0]?.destroy).toHaveBeenCalled());
+
+    await user.click(await screen.findByRole('button', { name: 'Resume' }));
+    await screen.findByText('Rendered chapter');
+    expect(factory).toHaveBeenCalledTimes(2);
+    expect(engines[1]?.open).toHaveBeenCalledWith(
+      file,
+      expect.any(HTMLElement),
+      expect.objectContaining({ spineIndex: 0 }),
+    );
+  });
+
+  it('switches between Strict and Balanced while keeping Trusted locked', async () => {
+    const user = userEvent.setup();
+    const file = new File([new Uint8Array([0x50, 0x4b, 0x03, 0x04])], 'Calm.epub', {
+      type: 'application/epub+zip',
+    });
+    const engine = createReaderEngine();
+    const platform = createPlatform({
+      environment: 'browser-preview',
+      selection: {
+        status: 'selected',
+        publication: {
+          id: 'safety-level-book',
+          displayName: file.name,
+          fileSize: file.size,
+          lastModified: file.lastModified,
+          mimeType: file.type,
+          availability: 'selected',
+          file,
+        },
+      },
+    });
+    render(<App platform={platform} readerEngineFactory={() => engine} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Open EPUB' }));
+    await screen.findByText('Rendered chapter');
+    expect(screen.getByRole('button', { name: 'Strict' })).toHaveAttribute('aria-pressed', 'true');
+
+    await user.click(screen.getByRole('button', { name: 'Balanced' }));
+    await waitFor(() => expect(engine.applySafetyLevel).toHaveBeenLastCalledWith('balanced'));
+    expect(screen.getByRole('button', { name: 'Balanced' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(screen.getByText('Trusted').closest('[aria-disabled="true"]')).toHaveClass(
+      'safety-track__locked',
+    );
+    expect(window.localStorage.getItem('novelreaper:browser-settings:v1')).toContain(
+      '"safetyLevel":"balanced"',
+    );
   });
 
   it('shows a real loading state before an empty library is known', () => {

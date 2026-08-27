@@ -5,6 +5,7 @@ import {
   READER_FONT_FAMILIES,
   type ReaderAppearanceSettings,
 } from '../../reader/appearance';
+import type { BrowserSafetyLevel } from '../../reader/strict-policy';
 
 export const BROWSER_READER_SETTINGS_KEY = 'novelreaper:browser-settings:v1';
 
@@ -13,11 +14,13 @@ export type ReaderMode = 'dashboard' | 'focus';
 export interface BrowserReaderPreferences {
   appearance: ReaderAppearanceSettings;
   mode: ReaderMode;
+  safetyLevel: BrowserSafetyLevel;
 }
 
 export const DEFAULT_BROWSER_READER_PREFERENCES: BrowserReaderPreferences = Object.freeze({
   appearance: DEFAULT_READER_APPEARANCE,
   mode: 'dashboard',
+  safetyLevel: 'strict',
 });
 
 const preferencesSchema = z
@@ -33,6 +36,7 @@ const preferencesSchema = z
       })
       .strict(),
     mode: z.enum(['dashboard', 'focus']),
+    safetyLevel: z.enum(['strict', 'balanced']).default('strict'),
   })
   .strict();
 
@@ -66,6 +70,7 @@ export function loadBrowserReaderPreferences(): PreferencesLoadResult {
         preferences: {
           appearance: parsed.data.appearance,
           mode: parsed.data.mode,
+          safetyLevel: parsed.data.safetyLevel,
         },
       };
     }

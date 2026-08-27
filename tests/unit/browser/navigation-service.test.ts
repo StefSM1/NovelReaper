@@ -13,6 +13,7 @@ describe('serialized reader navigation', () => {
     const serviceRef: { current?: ReaderNavigationService } = {};
     const engine: ReaderEngine = {
       applyAppearance: vi.fn().mockResolvedValue(undefined),
+      applySafetyLevel: vi.fn().mockResolvedValue(undefined),
       open: vi.fn(),
       goTo: vi.fn((target) => {
         serviceRef.current?.relocate(relocation(Number(target)));
@@ -47,6 +48,7 @@ describe('serialized reader navigation', () => {
     });
     const engine: ReaderEngine = {
       applyAppearance: vi.fn().mockResolvedValue(undefined),
+      applySafetyLevel: vi.fn().mockResolvedValue(undefined),
       open: vi.fn(),
       goTo: vi.fn(() => pending),
       setNavigationState: vi.fn(),
@@ -72,6 +74,7 @@ describe('serialized reader navigation', () => {
     const serviceRef: { current?: ReaderNavigationService } = {};
     const engine: ReaderEngine = {
       applyAppearance: vi.fn().mockResolvedValue(undefined),
+      applySafetyLevel: vi.fn().mockResolvedValue(undefined),
       open: vi.fn(),
       goTo: vi.fn((target) => {
         serviceRef.current?.relocate(relocation(Number(target)));

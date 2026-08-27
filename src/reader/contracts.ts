@@ -1,4 +1,5 @@
 import type { ReaderAppearanceSettings } from './appearance';
+import type { BrowserSafetyLevel } from './strict-policy';
 
 export type ReaderNavigationTarget = string | number;
 
@@ -63,6 +64,7 @@ export interface ReaderEngine {
   ) => Promise<ReaderPublication>;
   goTo: (target: ReaderNavigationTarget, locator?: ReaderLocator) => Promise<void>;
   applyAppearance: (settings: ReaderAppearanceSettings) => Promise<void>;
+  applySafetyLevel: (level: BrowserSafetyLevel) => Promise<void>;
   setNavigationState: (state: ReaderNavigationState) => void;
   subscribe: (listener: (event: ReaderEngineEvent) => void) => () => void;
   destroy: () => void;

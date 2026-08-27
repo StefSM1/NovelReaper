@@ -27,9 +27,10 @@ import {
 import { closestFrameElement } from './frame-events';
 import { activeTocId, metadataFromBook, tocFromBook } from './publication-model';
 import {
-  installStrictPublicationPolicy,
-  sanitizeStrictCss,
-  sanitizeStrictMarkup,
+  installPublicationPolicy,
+  sanitizePublicationCss,
+  sanitizePublicationMarkup,
+  type BrowserSafetyLevel,
 } from './strict-policy';
 
 const CHAPTER_LOAD_TIMEOUT_MS = 15_000;
@@ -147,12 +148,13 @@ export class FoliateReaderEngine implements ReaderEngine {
   private book: FoliateBook | undefined;
   private frame: HTMLIFrameElement | undefined;
   private container: HTMLElement | undefined;
-  private removeStrictPolicy: (() => void) | undefined;
+  private removePublicationPolicy: (() => void) | undefined;
   private publication: ReaderPublication | undefined;
   private coverUrl: string | undefined;
   private activeSectionIndex: number | undefined;
   private navigationState: ReaderNavigationState = { busy: false, finished: false };
   private appearance: ReaderAppearanceSettings = DEFAULT_READER_APPEARANCE;
+  private safetyLevel: BrowserSafetyLevel = 'strict';
   private lastLocation: ReaderLocator | undefined;
   private layoutObserver: ResizeObserver | undefined;
   private displayGeneration = 0;
@@ -194,7 +196,10 @@ export class FoliateReaderEngine implements ReaderEngine {
 
       this.book = book;
       if (book.transformTarget) {
-        this.removeStrictPolicy = installStrictPublicationPolicy(book.transformTarget);
+        this.removePublicationPolicy = installPublicationPolicy(
+          book.transformTarget,
+          this.safetyLevel,
+        );
       }
 
       const metadata = metadataFromBook(book.metadata, source.name.replace(/\.epub$/i, ''));
@@ -215,7 +220,7 @@ export class FoliateReaderEngine implements ReaderEngine {
       };
 
       const frame = document.createElement('iframe');
-      frame.className = 'strict-reader-frame';
+      frame.className = 'publication-reader-frame';
       frame.title = `${metadata.title} reading area`;
       frame.setAttribute('sandbox', 'allow-same-origin');
       frame.setAttribute('referrerpolicy', 'no-referrer');
@@ -291,10 +296,25 @@ export class FoliateReaderEngine implements ReaderEngine {
     if (!document || activeIndex === undefined) return;
     const locator = this.lastLocation;
     const style = document.head?.querySelector<HTMLStyleElement>('style[data-novel-reaper]');
-    if (style) style.textContent = sanitizeStrictCss(readingStyle(this.appearance));
+    if (style) {
+      style.textContent = sanitizePublicationCss(readingStyle(this.appearance), this.safetyLevel);
+    }
     await this.settleFrameLayout();
     if (locator?.spineIndex === activeIndex) this.scrollToLocator(locator);
     this.emitRelocation(activeIndex);
+  }
+
+  public async applySafetyLevel(level: BrowserSafetyLevel): Promise<void> {
+    if (level === this.safetyLevel) return;
+    this.safetyLevel = level;
+    this.removePublicationPolicy?.();
+    this.removePublicationPolicy = this.book?.transformTarget
+      ? installPublicationPolicy(this.book.transformTarget, level)
+      : undefined;
+    const activeIndex = this.activeSectionIndex;
+    if (activeIndex === undefined) return;
+    const locator = this.lastLocation;
+    await this.displaySection(activeIndex, activeIndex, locator);
   }
 
   public setNavigationState(state: ReaderNavigationState): void {
@@ -314,8 +334,8 @@ export class FoliateReaderEngine implements ReaderEngine {
     if (this.activeSectionIndex !== undefined)
       this.book?.sections[this.activeSectionIndex]?.unload();
     this.activeSectionIndex = undefined;
-    this.removeStrictPolicy?.();
-    this.removeStrictPolicy = undefined;
+    this.removePublicationPolicy?.();
+    this.removePublicationPolicy = undefined;
     this.book?.destroy?.();
     this.book = undefined;
     if (this.coverUrl) URL.revokeObjectURL(this.coverUrl);
@@ -343,10 +363,11 @@ export class FoliateReaderEngine implements ReaderEngine {
     try {
       const response = await fetch(sourceUrl, { cache: 'no-store', credentials: 'omit' });
       if (!response.ok) throw new Error('Chapter content could not be loaded.');
-      const markup = sanitizeStrictMarkup(
+      const markup = sanitizePublicationMarkup(
         await response.text(),
         chapterType(response),
         readingStyle(this.appearance),
+        this.safetyLevel,
       );
       await this.loadFrameMarkup(frame, markup, generation);
       if (generation !== this.displayGeneration) return;

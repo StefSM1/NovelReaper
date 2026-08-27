@@ -31,6 +31,7 @@ import {
   storedReaderProgress,
   type ReaderProgressState,
 } from '../../reader/progress-state';
+import type { BrowserSafetyLevel } from '../../reader/strict-policy';
 import type { ReaderStateSnapshot, WindowStateSnapshot } from '../../shared/contracts/ipc';
 import { AppearancePanel } from './AppearancePanel';
 import { LibraryScreen } from './LibraryScreen';
@@ -156,6 +157,7 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
 
   useEffect(() => {
     if (
+      screen !== 'reader' ||
       publication?.availability !== 'selected' ||
       !('file' in publication) ||
       !readerEngineFactory ||
@@ -218,7 +220,8 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
     document.addEventListener('visibilitychange', flushWhenHidden);
 
     void engine
-      .applyAppearance(preferencesRef.current.appearance)
+      .applySafetyLevel(preferencesRef.current.safetyLevel)
+      .then(() => engine.applyAppearance(preferencesRef.current.appearance))
       .then(() => engine.open(source, host, initialLocator))
       .then((book) => {
         if (!active) return;
@@ -289,7 +292,7 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
       if (browserReaderEngineRef.current === engine) browserReaderEngineRef.current = undefined;
       navigationServiceRef.current = undefined;
     };
-  }, [platform, publication, readerAttempt, readerEngineFactory]);
+  }, [platform, publication, readerAttempt, readerEngineFactory, screen]);
 
   const commitPreferences = useCallback(
     (next: BrowserReaderPreferences): void => {
@@ -323,6 +326,14 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
       .applyAppearance(appearance)
       .catch(() => setReaderError('That appearance change could not be applied.'))
       .finally(() => setIsApplyingAppearance(false));
+  };
+
+  const changeSafetyLevel = (safetyLevel: BrowserSafetyLevel): void => {
+    if (preferencesRef.current.safetyLevel === safetyLevel) return;
+    navigationServiceRef.current?.flush();
+    setReaderError(undefined);
+    commitPreferences({ ...preferencesRef.current, safetyLevel });
+    setReaderAttempt((attempt) => attempt + 1);
   };
 
   useEffect(() => {
@@ -624,7 +635,10 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
                             <span />
                             <span />
                           </div>
-                          <p>Preparing chapters in Strict mode…</p>
+                          <p>
+                            Preparing chapters in{' '}
+                            {preferences.safetyLevel === 'strict' ? 'Strict' : 'Balanced'} mode…
+                          </p>
                         </div>
                       ) : null}
                       {browserReaderStatus === 'error' ? (
@@ -748,12 +762,14 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
           <AppearancePanel
             appearance={preferences.appearance}
             mode={preferences.mode}
-            busy={isApplyingAppearance || browserReaderStatus === 'opening'}
+            safetyLevel={preferences.safetyLevel}
+            busy={isApplyingAppearance || isNavigating || browserReaderStatus === 'opening'}
             fullscreenAvailable={platform.capabilities.fullscreen}
             isFullscreen={windowState.isFullScreen}
             notices={notices}
             onAppearanceChange={changeAppearance}
             onModeChange={changeMode}
+            onSafetyLevelChange={changeSafetyLevel}
             onToggleFullscreen={toggleFullscreen}
           />
         </main>

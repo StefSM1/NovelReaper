@@ -36,5 +36,12 @@ describe('VirtualizedToc', () => {
       'aria-current',
       'location',
     );
+    const active = screen.getByRole('button', { name: /Chapter 1/ });
+    const title = active.querySelector('strong');
+    const status = active.querySelector('.toc__status');
+    expect(status).toHaveTextContent('•');
+    expect(Array.from(active.children).indexOf(status as Element)).toBeGreaterThan(
+      Array.from(active.children).indexOf(title as Element),
+    );
   });
 });

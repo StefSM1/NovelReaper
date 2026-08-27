@@ -101,8 +101,13 @@ export function VirtualizedToc({
                   data-chapter-state={state}
                   onClick={() => onOpen(item)}
                 >
-                  <span>{item.label.match(/^(\d+)\s*:/)?.[1] ?? itemIndex + 1}</span>
+                  <span className="toc__number">
+                    {item.label.match(/^(\d+)\s*:/)?.[1] ?? itemIndex + 1}
+                  </span>
                   <strong>{item.label}</strong>
+                  <span className="toc__status" aria-hidden="true">
+                    {state === 'completed' ? '✓' : state === 'in-progress' ? '•' : ''}
+                  </span>
                   <span className="visually-hidden">{state.replace('-', ' ')}</span>
                 </button>
               </li>

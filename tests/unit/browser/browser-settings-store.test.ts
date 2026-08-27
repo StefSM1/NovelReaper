@@ -21,6 +21,7 @@ describe('browser reader settings store', () => {
         pageWidthCh: 82 as const,
       },
       mode: 'focus' as const,
+      safetyLevel: 'balanced' as const,
     };
 
     expect(saveBrowserReaderPreferences(preferences)).toBe(true);
@@ -42,5 +43,18 @@ describe('browser reader settings store', () => {
       warning: 'Invalid reader settings were reset safely.',
     });
     expect(window.localStorage.getItem(BROWSER_READER_SETTINGS_KEY)).toBeNull();
+  });
+
+  it('migrates older valid settings to the Strict default', () => {
+    window.localStorage.setItem(
+      BROWSER_READER_SETTINGS_KEY,
+      JSON.stringify({
+        schemaVersion: 1,
+        appearance: DEFAULT_BROWSER_READER_PREFERENCES.appearance,
+        mode: 'dashboard',
+      }),
+    );
+
+    expect(loadBrowserReaderPreferences().preferences.safetyLevel).toBe('strict');
   });
 });

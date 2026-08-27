@@ -7,16 +7,19 @@ import {
   type ReaderTheme,
 } from '../../reader/appearance';
 import type { ReaderMode } from '../../platform/browser/browser-settings-store';
+import type { BrowserSafetyLevel } from '../../reader/strict-policy';
 
 interface AppearancePanelProps {
   appearance: ReaderAppearanceSettings;
   mode: ReaderMode;
+  safetyLevel: BrowserSafetyLevel;
   busy: boolean;
   fullscreenAvailable: boolean;
   isFullscreen: boolean;
   notices: string[];
   onAppearanceChange: (update: Partial<ReaderAppearanceSettings>) => void;
   onModeChange: (mode: ReaderMode) => void;
+  onSafetyLevelChange: (level: BrowserSafetyLevel) => void;
   onToggleFullscreen: () => void;
 }
 
@@ -38,12 +41,14 @@ const PAGE_WIDTH_LABELS: Record<ReaderPageWidth, string> = {
 export function AppearancePanel({
   appearance,
   mode,
+  safetyLevel,
   busy,
   fullscreenAvailable,
   isFullscreen,
   notices,
   onAppearanceChange,
   onModeChange,
+  onSafetyLevelChange,
   onToggleFullscreen,
 }: AppearancePanelProps): React.JSX.Element {
   const setTheme = (theme: ReaderTheme): void => onAppearanceChange({ theme });
@@ -191,10 +196,43 @@ export function AppearancePanel({
         {isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
       </button>
 
-      <div className="strict-status">
-        <strong>Strict EPUB safety</strong>
-        <small>Scripts and outbound book requests remain blocked.</small>
-      </div>
+      <fieldset className="appearance-control safety-control">
+        <legend>EPUB safety</legend>
+        <div
+          className={`safety-track safety-track--${safetyLevel}`}
+          role="group"
+          aria-label="EPUB safety level"
+        >
+          <span className="safety-track__rail" aria-hidden="true" />
+          <span className="safety-track__thumb" aria-hidden="true" />
+          {(['strict', 'balanced'] as const).map((level) => (
+            <button
+              key={level}
+              type="button"
+              className={safetyLevel === level ? 'is-selected' : ''}
+              aria-pressed={safetyLevel === level}
+              disabled={busy}
+              onClick={() => onSafetyLevelChange(level)}
+            >
+              <span aria-hidden="true" />
+              {level === 'strict' ? 'Strict' : 'Balanced'}
+            </button>
+          ))}
+          <span className="safety-track__locked" aria-disabled="true">
+            <span aria-hidden="true">×</span>
+            Trusted
+            <small>Later</small>
+          </span>
+        </div>
+        <div className="safety-status" role="status">
+          <strong>{safetyLevel === 'strict' ? 'Strict protection' : 'Balanced protection'}</strong>
+          <small>
+            {safetyLevel === 'strict'
+              ? 'Scripts and outbound book requests remain blocked.'
+              : 'Passive HTTPS media and styles are allowed; scripts stay blocked.'}
+          </small>
+        </div>
+      </fieldset>
 
       {notices.map((notice) => (
         <div className="operation-message" role="status" key={notice}>
