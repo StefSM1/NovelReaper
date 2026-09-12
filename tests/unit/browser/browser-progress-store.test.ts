@@ -89,4 +89,18 @@ describe('browser progress persistence', () => {
     expect(store.takeLoadWarning()).toBeUndefined();
     expect(storage.getItem(key)).toBeNull();
   });
+
+  it('retains a failed save for the next lifecycle flush', () => {
+    const store = new BrowserProgressStore(new MemoryStorage(), 'retry-progress');
+    const save = vi.spyOn(store, 'save').mockReturnValueOnce(false);
+    const warning = vi.fn();
+    const writer = new DebouncedProgressWriter(store, warning);
+    writer.flush(progress);
+    expect(warning).toHaveBeenCalledOnce();
+    writer.flush();
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(store.load()).toEqual(progress);
+    writer.dispose();
+    expect(save).toHaveBeenCalledTimes(2);
+  });
 });

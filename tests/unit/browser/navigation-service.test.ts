@@ -97,4 +97,50 @@ describe('serialized reader navigation', () => {
     await service.navigate({ source: 'contents', target: 2 });
     expect(service.currentState.completedSpineIndices).toEqual([]);
   });
+
+  it.each(['resolve', 'reject'] as const)(
+    'ignores %s and relocation after disposal',
+    async (outcome) => {
+      let release!: () => void;
+      const pending = new Promise<void>((resolve, reject) => {
+        release = () =>
+          outcome === 'resolve' ? resolve() : reject(new Error('Old navigation failed'));
+      });
+      const engine: ReaderEngine = {
+        applyAppearance: vi.fn(),
+        applySafetyLevel: vi.fn(),
+        open: vi.fn(),
+        goTo: vi.fn(() => pending),
+        setNavigationState: vi.fn(),
+        subscribe: vi.fn(() => () => undefined),
+        destroy: vi.fn(),
+      };
+      const onState = vi.fn();
+      const onBusy = vi.fn();
+      const flush = vi.fn();
+      const service = new ReaderNavigationService({
+        engine,
+        initialState: createReaderProgress([0, 1], undefined, relocation(0)),
+        onState,
+        onBusy,
+        flush,
+      });
+      const navigation = service.navigate({ source: 'next' });
+      service.dispose();
+      const flushCount = flush.mock.calls.length;
+      const footerCount = vi.mocked(engine.setNavigationState).mock.calls.length;
+      service.relocate(relocation(1));
+      release();
+      expect(await navigation).toBe(false);
+      expect(await service.navigate({ source: 'next' })).toBe(false);
+      service.flush();
+      service.dispose();
+      expect(flush).toHaveBeenCalledTimes(flushCount);
+      expect(engine.setNavigationState).toHaveBeenCalledTimes(footerCount);
+      expect(onState).not.toHaveBeenCalled();
+      expect(onBusy).toHaveBeenCalledExactlyOnceWith(true);
+      expect(service.currentState.currentSpineIndex).toBe(0);
+      expect(service.currentState.completedSpineIndices).toEqual([]);
+    },
+  );
 });

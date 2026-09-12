@@ -23,6 +23,7 @@ interface ReaderNavigationServiceOptions {
 export class ReaderNavigationService {
   private state: ReaderProgressState;
   private busy = false;
+  private disposed = false;
 
   public constructor(private readonly options: ReaderNavigationServiceOptions) {
     this.state = options.initialState;
@@ -34,6 +35,7 @@ export class ReaderNavigationService {
   }
 
   public relocate(location: ReaderRelocation): void {
+    if (this.disposed) return;
     const next = readerProgressReducer(this.state, { type: 'relocate', location });
     if (next === this.state) return;
     this.state = next;
@@ -42,14 +44,13 @@ export class ReaderNavigationService {
   }
 
   public async navigate(request: ReaderNavigationRequest): Promise<boolean> {
-    if (this.busy) return false;
+    if (this.busy || this.disposed) return false;
     this.busy = true;
     this.options.onBusy(true);
     this.syncFooter();
-    this.options.flush(storedReaderProgress(this.state));
-
     const fromSpineIndex = this.state.currentSpineIndex;
     try {
+      this.flush();
       if (request.source === 'finish') {
         const finalIndex = this.state.linearSpineIndices.at(-1);
         if (fromSpineIndex !== finalIndex) return false;
@@ -65,6 +66,7 @@ export class ReaderNavigationService {
       const target = this.resolveTarget(request);
       if (target === undefined) return false;
       await this.options.engine.goTo(target);
+      if (this.disposed) return false;
       const destinationSpineIndex = this.state.currentSpineIndex;
       this.state = readerProgressReducer(this.state, {
         type: 'navigate',
@@ -75,15 +77,27 @@ export class ReaderNavigationService {
       this.options.onState(this.state);
       if (request.source === 'next') this.options.flush(storedReaderProgress(this.state));
       return true;
+    } catch (error) {
+      if (this.disposed) return false;
+      throw error;
     } finally {
       this.busy = false;
-      this.options.onBusy(false);
-      this.syncFooter();
+      if (!this.disposed) {
+        this.options.onBusy(false);
+        this.syncFooter();
+      }
     }
   }
 
   public flush(): void {
+    if (this.disposed) return;
     this.options.flush(storedReaderProgress(this.state));
+  }
+
+  public dispose(): void {
+    if (this.disposed) return;
+    this.flush();
+    this.disposed = true;
   }
 
   private resolveTarget(

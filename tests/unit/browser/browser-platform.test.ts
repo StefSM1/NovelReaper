@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   BROWSER_PREVIEW_STORAGE_KEY,
@@ -73,6 +73,32 @@ describe('BrowserPlatformAdapter', () => {
   it('treats picker cancellation as a neutral result', async () => {
     await expect(adapterFor().selectPublication()).resolves.toEqual({
       status: 'cancelled',
+    });
+  });
+
+  it('rejects failed metadata/removal writes and preserves the saved library', async () => {
+    const adapter = adapterFor(epubFile());
+    const selected = await adapter.selectPublication();
+    if (selected.status !== 'selected') throw new Error('Expected selected publication.');
+    const before = window.localStorage.getItem(BROWSER_PREVIEW_STORAGE_KEY);
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('Storage full', 'QuotaExceededError');
+    });
+
+    await expect(
+      adapter.updateLibraryPublication(selected.publication.id, { title: 'Changed' }),
+    ).rejects.toMatchObject({ code: 'STORAGE_UNAVAILABLE' });
+    await expect(adapter.removeLibraryPublication(selected.publication.id)).rejects.toMatchObject({
+      code: 'STORAGE_UNAVAILABLE',
+    });
+    expect(window.localStorage.getItem(BROWSER_PREVIEW_STORAGE_KEY)).toBe(before);
+    expect((await adapter.getBootstrapState()).library).toHaveLength(1);
+  });
+
+  it('reports unavailable storage instead of claiming a successful removal', async () => {
+    const adapter = new BrowserPlatformAdapter({ document });
+    await expect(adapter.removeLibraryPublication('missing-storage')).rejects.toMatchObject({
+      code: 'STORAGE_UNAVAILABLE',
     });
   });
 

@@ -46,6 +46,12 @@ export default tseslint.config(
     },
   },
   {
+    files: ['tests/browser/server-setup.mts'],
+    languageOptions: {
+      parserOptions: { projectService: false, project: './tsconfig.vite.json' },
+    },
+  },
+  {
     files: ['vite.browser.config.mts'],
     rules: {
       '@typescript-eslint/no-unsafe-call': 'off',

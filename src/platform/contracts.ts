@@ -81,6 +81,7 @@ export type PlatformErrorCode =
   | 'FILE_TOO_LARGE'
   | 'INVALID_EPUB_EXTENSION'
   | 'INVALID_ZIP_SIGNATURE'
+  | 'STORAGE_UNAVAILABLE'
   | 'UNSUPPORTED_FEATURE';
 
 export class PlatformOperationError extends Error {

@@ -311,14 +311,25 @@ export class BrowserPlatformAdapter implements NovelReaperPlatform {
           : { lastOpenedAt: Math.max(0, Math.round(update.lastOpenedAt)) }),
       };
     });
-    writeStoredLibrary(this.storage, publications);
+    if (!writeStoredLibrary(this.storage, publications)) {
+      return Promise.reject(
+        new PlatformOperationError('STORAGE_UNAVAILABLE', 'Library metadata could not be saved.'),
+      );
+    }
     return Promise.resolve(sortLibrary(publications).map(unavailablePublication));
   }
 
   public removeLibraryPublication(id: string): Promise<PublicationDescriptor[]> {
     const stored = readStoredLibrary(this.storage);
     const publications = stored.publications.filter((entry) => entry.id !== id);
-    writeStoredLibrary(this.storage, publications);
+    if (!writeStoredLibrary(this.storage, publications)) {
+      return Promise.reject(
+        new PlatformOperationError(
+          'STORAGE_UNAVAILABLE',
+          'That library card could not be removed.',
+        ),
+      );
+    }
     return Promise.resolve(sortLibrary(publications).map(unavailablePublication));
   }
 

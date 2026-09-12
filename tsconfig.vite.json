@@ -6,5 +6,5 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["vite.browser.config.mts"]
+  "include": ["vite.browser.config.mts", "tests/browser/server-setup.mts"]
 }

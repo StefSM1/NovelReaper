@@ -106,8 +106,8 @@ export class DebouncedProgressWriter {
     this.timer = undefined;
     if (!this.pending) return;
     const pending = this.pending;
-    this.pending = undefined;
-    if (!this.store.save(pending)) this.onSaveError();
+    if (this.store.save(pending)) this.pending = undefined;
+    else this.onSaveError();
   }
 
   public dispose(): void {

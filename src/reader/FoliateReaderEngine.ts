@@ -158,6 +158,8 @@ export class FoliateReaderEngine implements ReaderEngine {
   private lastLocation: ReaderLocator | undefined;
   private layoutObserver: ResizeObserver | undefined;
   private displayGeneration = 0;
+  private lifecycleGeneration = 0;
+  private readonly pendingFrameWaits = new Set<() => void>();
   private scrollFrame = 0;
   private resizeTimer = 0;
 
@@ -172,12 +174,23 @@ export class FoliateReaderEngine implements ReaderEngine {
     initialLocator?: ReaderLocator,
   ): Promise<ReaderPublication> {
     this.destroy();
+    const lifecycle = this.lifecycleGeneration;
+    const assertActive = (): void => {
+      if (lifecycle !== this.lifecycleGeneration) {
+        throw new ReaderEngineError('OPEN_FAILED', 'Book opening was cancelled.');
+      }
+    };
     this.container = container;
     let packageParsed = false;
 
     try {
       const { makeBook } = await import('foliate-js/view.js');
+      assertActive();
       const book = await makeBook(source);
+      if (lifecycle !== this.lifecycleGeneration) {
+        book.destroy?.();
+        assertActive();
+      }
       packageParsed = true;
       if (book.rendition?.layout === 'pre-paginated') {
         book.destroy?.();
@@ -204,6 +217,7 @@ export class FoliateReaderEngine implements ReaderEngine {
 
       const metadata = metadataFromBook(book.metadata, source.name.replace(/\.epub$/i, ''));
       const cover = await this.createCoverUrl(book);
+      assertActive();
       if (cover) metadata.coverUrl = cover;
       const toc = tocFromBook(book);
       const declaredLinearSpineIndices = book.sections
@@ -237,10 +251,12 @@ export class FoliateReaderEngine implements ReaderEngine {
           ? initialLocator.spineIndex
           : firstLinear;
       await this.displaySection(initialIndex, undefined, initialLocator);
+      assertActive();
       return this.publication;
     } catch (error) {
+      assertActive();
       const mappedError = mapOpenError(error);
-      this.destroy();
+      if (lifecycle === this.lifecycleGeneration) this.destroy();
       if (!packageParsed && mappedError.code === 'OPEN_FAILED') {
         throw new ReaderEngineError(
           'MALFORMED_EPUB',
@@ -276,7 +292,9 @@ export class FoliateReaderEngine implements ReaderEngine {
     try {
       if (index !== this.activeSectionIndex) await this.displaySection(index, target, locator);
       else {
+        const generation = this.displayGeneration;
         await this.settleFrameLayout();
+        if (generation !== this.displayGeneration) throw new Error('Navigation was cancelled.');
         if (locator) this.scrollToLocator(locator);
         else this.scrollToTarget(target);
         this.emitRelocation(index);
@@ -295,11 +313,13 @@ export class FoliateReaderEngine implements ReaderEngine {
     const activeIndex = this.activeSectionIndex;
     if (!document || activeIndex === undefined) return;
     const locator = this.lastLocation;
+    const generation = this.displayGeneration;
     const style = document.head?.querySelector<HTMLStyleElement>('style[data-novel-reaper]');
     if (style) {
       style.textContent = sanitizePublicationCss(readingStyle(this.appearance), this.safetyLevel);
     }
     await this.settleFrameLayout();
+    if (generation !== this.displayGeneration) return;
     if (locator?.spineIndex === activeIndex) this.scrollToLocator(locator);
     this.emitRelocation(activeIndex);
   }
@@ -323,11 +343,9 @@ export class FoliateReaderEngine implements ReaderEngine {
   }
 
   public destroy(): void {
+    this.lifecycleGeneration += 1;
     this.displayGeneration += 1;
-    if (this.scrollFrame) cancelAnimationFrame(this.scrollFrame);
-    this.scrollFrame = 0;
-    if (this.resizeTimer) window.clearTimeout(this.resizeTimer);
-    this.resizeTimer = 0;
+    for (const cancel of this.pendingFrameWaits) cancel();
     this.detachFrameDocument();
     this.frame?.remove();
     this.frame = undefined;
@@ -357,11 +375,16 @@ export class FoliateReaderEngine implements ReaderEngine {
     const section = book?.sections[index];
     if (!book || !frame || !section) throw new Error('Chapter section is unavailable.');
     const generation = ++this.displayGeneration;
-    const sourceUrl = await section.load();
-    if (!sourceUrl) throw new Error('Chapter content is unavailable.');
+    const assertActive = (): void => {
+      if (generation !== this.displayGeneration) throw new Error('Chapter opening was cancelled.');
+    };
 
     try {
+      const sourceUrl = await section.load();
+      assertActive();
+      if (!sourceUrl) throw new Error('Chapter content is unavailable.');
       const response = await fetch(sourceUrl, { cache: 'no-store', credentials: 'omit' });
+      assertActive();
       if (!response.ok) throw new Error('Chapter content could not be loaded.');
       const markup = sanitizePublicationMarkup(
         await response.text(),
@@ -369,8 +392,10 @@ export class FoliateReaderEngine implements ReaderEngine {
         readingStyle(this.appearance),
         this.safetyLevel,
       );
+      assertActive();
+      this.detachFrameDocument();
       await this.loadFrameMarkup(frame, markup, generation);
-      if (generation !== this.displayGeneration) return;
+      assertActive();
 
       const previousIndex = this.activeSectionIndex;
       this.activeSectionIndex = index;
@@ -380,6 +405,7 @@ export class FoliateReaderEngine implements ReaderEngine {
       this.attachFrameDocument(index);
       this.installChapterNavigation();
       await this.settleFrameLayout();
+      assertActive();
       if (locator?.spineIndex === index) this.scrollToLocator(locator);
       else this.scrollToTarget(target);
       this.emitRelocation(index);
@@ -402,6 +428,11 @@ export class FoliateReaderEngine implements ReaderEngine {
       const cleanup = (): void => {
         window.clearTimeout(timeout);
         frame.removeEventListener('load', loaded);
+        this.pendingFrameWaits.delete(cancel);
+      };
+      const cancel = (): void => {
+        cleanup();
+        reject(new Error('Chapter opening was cancelled.'));
       };
       const loaded = (): void => {
         cleanup();
@@ -410,6 +441,7 @@ export class FoliateReaderEngine implements ReaderEngine {
         } else resolve();
       };
       frame.addEventListener('load', loaded, { once: true });
+      this.pendingFrameWaits.add(cancel);
       frame.srcdoc = markup;
     });
   }
@@ -426,6 +458,10 @@ export class FoliateReaderEngine implements ReaderEngine {
   }
 
   private detachFrameDocument(): void {
+    if (this.scrollFrame) cancelAnimationFrame(this.scrollFrame);
+    this.scrollFrame = 0;
+    if (this.resizeTimer) window.clearTimeout(this.resizeTimer);
+    this.resizeTimer = 0;
     const document = this.frame?.contentDocument;
     document?.removeEventListener('click', this.onChapterClick, true);
     document?.defaultView?.removeEventListener('scroll', this.onChapterScroll);
@@ -606,10 +642,22 @@ export class FoliateReaderEngine implements ReaderEngine {
   }
 
   private settleFrameLayout(): Promise<void> {
-    const view = this.frame?.contentWindow;
-    if (!view) return Promise.resolve();
+    if (!this.frame?.contentWindow) return Promise.resolve();
     return new Promise((resolve) => {
-      view.requestAnimationFrame(() => view.requestAnimationFrame(() => resolve()));
+      // A removed/hidden chapter frame may never deliver another animation frame.
+      // Wait on the shell, with a bounded fallback and immediate teardown cleanup.
+      let animationFrame = 0;
+      const finish = (): void => {
+        window.clearTimeout(timeout);
+        cancelAnimationFrame(animationFrame);
+        this.pendingFrameWaits.delete(finish);
+        resolve();
+      };
+      const timeout = window.setTimeout(finish, 150);
+      this.pendingFrameWaits.add(finish);
+      animationFrame = requestAnimationFrame(() => {
+        animationFrame = requestAnimationFrame(finish);
+      });
     });
   }
 
@@ -681,6 +729,7 @@ export class FoliateReaderEngine implements ReaderEngine {
     try {
       const cover = await book.getCover();
       if (
+        this.book !== book ||
         !cover ||
         cover.size > 8 * 1024 * 1024 ||
         !/^image\/(?:avif|gif|jpeg|png|webp)$/i.test(cover.type)

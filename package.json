@@ -27,6 +27,7 @@
     "web:build": "vite build --config vite.browser.config.mts",
     "web:preview": "vite preview --config vite.browser.config.mts",
     "web:test": "vitest run tests/unit/browser tests/component",
+    "web:test:e2e": "npm run web:build && playwright test --config playwright.browser.config.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },

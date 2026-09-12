@@ -447,6 +447,90 @@ describe('shared NovelReaper application shell', () => {
     );
   });
 
+  it.each(['resolve', 'reject'] as const)(
+    'keeps Resume usable when abandoned chapter navigation later %ss',
+    async (outcome) => {
+      const user = userEvent.setup();
+      const file = new File(['book'], 'Calm.epub');
+      const platform = createPlatform({
+        environment: 'browser-preview',
+        selection: {
+          status: 'selected',
+          publication: {
+            id: 'pending-navigation-book',
+            displayName: file.name,
+            fileSize: file.size,
+            lastModified: file.lastModified,
+            mimeType: file.type,
+            availability: 'selected',
+            file,
+          },
+        },
+      });
+      let release!: () => void;
+      const pending = new Promise<void>((resolve, reject) => {
+        release = () => (outcome === 'resolve' ? resolve() : reject(new Error('Stale failure')));
+      });
+      const firstEngine = createReaderEngine();
+      vi.mocked(firstEngine.goTo).mockReturnValue(pending);
+      const nextEngine = createReaderEngine();
+      const factory = vi.fn().mockReturnValueOnce(firstEngine).mockReturnValue(nextEngine);
+      render(<App platform={platform} readerEngineFactory={factory} />);
+
+      await user.click(await screen.findByRole('button', { name: 'Open EPUB' }));
+      await screen.findByText('Rendered chapter');
+      await user.click(screen.getByRole('button', { name: /Second Chapter/ }));
+      expect(firstEngine.goTo).toHaveBeenCalledOnce();
+      await user.click(screen.getByRole('button', { name: 'Library' }));
+      await user.click(await screen.findByRole('button', { name: 'Resume' }));
+      await screen.findByText('Rendered chapter');
+      expect(screen.getByRole('button', { name: /Second Chapter/ })).toBeEnabled();
+      await act(async () => {
+        release();
+        await pending.catch(() => undefined);
+      });
+      expect(screen.queryByText('Chapter navigation failed.')).not.toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: /Second Chapter/ }));
+      expect(nextEngine.goTo).toHaveBeenCalledWith('text/two.xhtml');
+    },
+  );
+
+  it('does not open an abandoned book after its initial safety setup finishes', async () => {
+    const user = userEvent.setup();
+    const file = new File(['book'], 'Calm.epub');
+    const platform = createPlatform({
+      environment: 'browser-preview',
+      selection: {
+        status: 'selected',
+        publication: {
+          id: 'pending-open-book',
+          displayName: file.name,
+          fileSize: file.size,
+          lastModified: file.lastModified,
+          mimeType: file.type,
+          availability: 'selected',
+          file,
+        },
+      },
+    });
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const engine = createReaderEngine();
+    vi.mocked(engine.applySafetyLevel).mockReturnValue(pending);
+    render(<App platform={platform} readerEngineFactory={() => engine} />);
+    await user.click(await screen.findByRole('button', { name: 'Open EPUB' }));
+    await user.click(screen.getByRole('button', { name: 'Library' }));
+    await act(async () => {
+      release();
+      await pending;
+    });
+    expect(engine.open).not.toHaveBeenCalled();
+    expect(engine.applyAppearance).not.toHaveBeenCalled();
+    expect(screen.queryByText('Rendered chapter')).not.toBeInTheDocument();
+  });
+
   it('switches between Strict and Balanced while keeping Trusted locked', async () => {
     const user = userEvent.setup();
     const file = new File([new Uint8Array([0x50, 0x4b, 0x03, 0x04])], 'Calm.epub', {

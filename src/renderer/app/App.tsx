@@ -189,6 +189,7 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
       ]);
     });
     let active = true;
+    let sessionNavigation: ReaderNavigationService | undefined;
     let pendingLocation: ReaderRelocation | undefined;
     browserReaderEngineRef.current?.destroy();
     browserReaderEngineRef.current = engine;
@@ -197,6 +198,8 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
     setReaderLocation(undefined);
     setReaderProgress(undefined);
     setReaderError(undefined);
+    setIsNavigating(false);
+    setIsApplyingAppearance(false);
     setBrowserReaderStatus('opening');
 
     const unsubscribe = engine.subscribe((event) => {
@@ -204,15 +207,15 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
       if (event.type === 'relocation') {
         pendingLocation = event.location;
         setReaderLocation(event.location);
-        navigationServiceRef.current?.relocate(event.location);
+        sessionNavigation?.relocate(event.location);
       } else if (event.type === 'navigation-request') {
-        void navigationServiceRef.current?.navigate(event.request).catch((error: unknown) => {
-          setReaderError(navigationErrorMessage(error));
+        void sessionNavigation?.navigate(event.request).catch((error: unknown) => {
+          if (active) setReaderError(navigationErrorMessage(error));
         });
       } else setReaderError(event.message);
     });
 
-    const flushProgress = (): void => navigationServiceRef.current?.flush();
+    const flushProgress = (): void => sessionNavigation?.flush();
     const flushWhenHidden = (): void => {
       if (document.visibilityState === 'hidden') flushProgress();
     };
@@ -221,10 +224,15 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
 
     void engine
       .applySafetyLevel(preferencesRef.current.safetyLevel)
-      .then(() => engine.applyAppearance(preferencesRef.current.appearance))
-      .then(() => engine.open(source, host, initialLocator))
+      .then(() => {
+        if (active) return engine.applyAppearance(preferencesRef.current.appearance);
+      })
+      .then(() => {
+        if (active) return engine.open(source, host, initialLocator);
+        return undefined;
+      })
       .then((book) => {
-        if (!active) return;
+        if (!active || !book) return;
         if (progressLoadWarning) {
           setNotices((current) =>
             current.includes(progressLoadWarning) ? current : [...current, progressLoadWarning],
@@ -249,6 +257,7 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
           },
           flush: (progress) => progressWriter.flush(progress),
         });
+        sessionNavigation = navigationService;
         navigationServiceRef.current = navigationService;
         setReaderProgress(initialProgress);
         setParsedPublication(book);
@@ -285,12 +294,13 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
       active = false;
       window.removeEventListener('pagehide', flushProgress);
       document.removeEventListener('visibilitychange', flushWhenHidden);
-      navigationServiceRef.current?.flush();
+      sessionNavigation?.dispose();
       progressWriter.dispose();
       unsubscribe();
       engine.destroy();
       if (browserReaderEngineRef.current === engine) browserReaderEngineRef.current = undefined;
-      navigationServiceRef.current = undefined;
+      if (navigationServiceRef.current === sessionNavigation)
+        navigationServiceRef.current = undefined;
     };
   }, [platform, publication, readerAttempt, readerEngineFactory, screen]);
 
@@ -324,8 +334,13 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
     setReaderError(undefined);
     void engine
       .applyAppearance(appearance)
-      .catch(() => setReaderError('That appearance change could not be applied.'))
-      .finally(() => setIsApplyingAppearance(false));
+      .catch(() => {
+        if (browserReaderEngineRef.current === engine)
+          setReaderError('That appearance change could not be applied.');
+      })
+      .finally(() => {
+        if (browserReaderEngineRef.current === engine) setIsApplyingAppearance(false);
+      });
   };
 
   const changeSafetyLevel = (safetyLevel: BrowserSafetyLevel): void => {
@@ -386,7 +401,6 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
     try {
       const result = await platform.selectPublication();
       if (result.status === 'selected') {
-        browserReaderEngineRef.current?.destroy();
         sessionPublicationsRef.current.set(result.publication.id, result.publication);
         setLibrary((current) =>
           upsertLibraryEntry(current, descriptorFromSelection(result.publication)),
@@ -427,7 +441,6 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
         entries.length ? entries : (current) => current.filter((item) => item.id !== entry.id),
       );
       if (publication?.id === entry.id) {
-        browserReaderEngineRef.current?.destroy();
         setPublication(undefined);
         setParsedPublication(undefined);
         setReaderProgress(undefined);
@@ -456,13 +469,14 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
     if (!navigation || isNavigating) return;
     setReaderError(undefined);
     try {
-      await navigation.navigate({
+      const navigated = await navigation.navigate({
         source: 'contents',
         target: item.target,
       });
-      setMobileReaderView('reader');
+      if (navigated && navigationServiceRef.current === navigation) setMobileReaderView('reader');
     } catch (error) {
-      setReaderError(navigationErrorMessage(error));
+      if (navigationServiceRef.current === navigation)
+        setReaderError(navigationErrorMessage(error));
     }
   };
 
