@@ -51,6 +51,161 @@ async function savedBookCount(page: Page): Promise<number> {
   );
 }
 
+async function localLibrarySnapshot(page: Page) {
+  return page.evaluate(async () => {
+    const records = await new Promise<{
+      books: Array<{ id: string; title: string; customTitle?: string; contentHash: string }>;
+      files: Blob[];
+    }>((resolve, reject) => {
+      const request = indexedDB.open('novelreaper-library', 1);
+      request.onerror = () => reject(request.error ?? new Error('Database open failed'));
+      request.onsuccess = () => {
+        const db = request.result;
+        const tx = db.transaction(['books', 'files'], 'readonly');
+        const books = tx.objectStore('books').getAll();
+        const files = tx.objectStore('files').getAll();
+        tx.oncomplete = () => {
+          db.close();
+          resolve({ books: books.result, files: files.result });
+        };
+        tx.onabort = () => {
+          db.close();
+          reject(tx.error ?? new Error('Database transaction failed'));
+        };
+      };
+    });
+    return {
+      books: records.books,
+      hashes: await Promise.all(
+        records.files.map(async (file) => [
+          ...new Uint8Array(await crypto.subtle.digest('SHA-256', await file.arrayBuffer())),
+        ]),
+      ),
+      progress: Object.fromEntries(
+        Object.entries(localStorage).filter(([key]) =>
+          key.startsWith('novelreaper:browser-progress:'),
+        ),
+      ),
+    };
+  });
+}
+
+test('custom volume titles persist without changing either EPUB or its progress', async ({
+  page,
+}) => {
+  const file = createSyntheticEpub();
+  await page.goto('/');
+  await importBook(page, file);
+  await page
+    .frameLocator('.publication-reader-frame')
+    .getByRole('button', { name: 'Next Chapter >' })
+    .click();
+  await expect(
+    page
+      .frameLocator('.publication-reader-frame')
+      .getByRole('heading', { name: 'The Second Page' }),
+  ).toBeVisible();
+  await page.getByRole('button', { name: 'Library', exact: true }).click();
+  await importBook(page, createSyntheticEpub({ longChapter: true }), 'Volume2.epub');
+  await page.getByRole('button', { name: 'Library', exact: true }).click();
+  await expect(
+    page.getByRole('heading', { name: 'Synthetic Reader Test', exact: true }),
+  ).toHaveCount(2);
+  const before = await localLibrarySnapshot(page);
+  const card = page.locator('.library-book').filter({ hasText: 'Last read: section 2' });
+  await card.getByRole('button', { name: 'Rename', exact: true }).click();
+  await page.getByRole('textbox', { name: 'Volume name' }).fill('  My Volume 1  ');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'My Volume 1', exact: true })).toBeVisible();
+  const after = await localLibrarySnapshot(page);
+  expect(after.progress).toEqual(before.progress);
+  expect(after.hashes).toEqual(before.hashes);
+  expect(after.books.map((book) => ({ ...book, customTitle: undefined }))).toEqual(
+    before.books.map((book) => ({ ...book, customTitle: undefined })),
+  );
+  expect(after.books.filter((book) => book.customTitle)).toHaveLength(1);
+  await card.getByRole('button', { name: 'Resume', exact: true }).click();
+  await expect(
+    page
+      .getByRole('region', { name: 'Current publication' })
+      .getByRole('heading', { name: 'My Volume 1' }),
+  ).toBeVisible();
+  await expect(
+    page
+      .frameLocator('.publication-reader-frame')
+      .getByRole('heading', { name: 'The Second Page' }),
+  ).toBeVisible();
+  await page.reload();
+  const renamed = page
+    .locator('.library-book')
+    .filter({ has: page.getByRole('heading', { name: 'My Volume 1', exact: true }) });
+  await renamed.getByRole('button', { name: 'Resume', exact: true }).click();
+  await expect(
+    page
+      .getByRole('region', { name: 'Current publication' })
+      .getByRole('heading', { name: 'My Volume 1' }),
+  ).toBeVisible();
+  await page.getByRole('button', { name: 'Library', exact: true }).click();
+  await importBook(page, file, 'Renamed-file.epub', 'The Second Page');
+  await page.getByRole('button', { name: 'Library', exact: true }).click();
+  await expect(page.locator('.library-book')).toHaveCount(2);
+  await expect(page.getByRole('heading', { name: 'My Volume 1', exact: true })).toBeVisible();
+});
+
+test('the rename editor fits light desktop and dark phone layouts', async ({ page }, testInfo) => {
+  await page.goto('/');
+  await importBook(page, createSyntheticEpub());
+  await page.getByRole('button', { name: 'Library', exact: true }).click();
+  await page.getByRole('button', { name: 'Rename', exact: true }).click();
+  await page.getByRole('textbox', { name: 'Volume name' }).fill('Volume 2 — A New Beginning');
+  await page.screenshot({ path: testInfo.outputPath('rename-light-desktop.png') });
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await page.getByRole('button', { name: 'Resume', exact: true }).click();
+  await page.getByRole('button', { name: 'Dark', exact: true }).click();
+  await page.getByRole('button', { name: 'Library', exact: true }).click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole('button', { name: 'Rename', exact: true }).click();
+  await page.getByRole('textbox', { name: 'Volume name' }).fill('Volume 2 — A New Beginning');
+  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeInViewport();
+  expect(
+    await page
+      .locator('.library-screen')
+      .evaluate((element) => element.scrollWidth <= element.clientWidth),
+  ).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('rename-dark-phone.png') });
+  await page.getByRole('textbox', { name: 'Volume name' }).fill('<Volume & 2>');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '<Volume & 2>', exact: true })).toBeVisible();
+});
+
+test('a failed title save keeps the old name and retryable draft', async ({ page }) => {
+  await page.goto('/');
+  await importBook(page, createSyntheticEpub());
+  await page.getByRole('button', { name: 'Library', exact: true }).click();
+  await page.evaluate(() => {
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- Restore the native method after one simulated storage failure.
+    const put = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function (value, key) {
+      if (this.name === 'books') {
+        IDBObjectStore.prototype.put = put;
+        throw new DOMException('Storage full', 'QuotaExceededError');
+      }
+      return key === undefined ? put.call(this, value) : put.call(this, value, key);
+    };
+  });
+  await page.getByRole('button', { name: 'Rename', exact: true }).click();
+  await page.getByRole('textbox', { name: 'Volume name' }).fill('Volume 7');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('previous title is unchanged');
+  await expect(
+    page.getByRole('heading', { name: 'Synthetic Reader Test', exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole('textbox', { name: 'Volume name' })).toHaveValue('Volume 7');
+  expect((await localLibrarySnapshot(page)).books[0]?.customTitle).toBeUndefined();
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Volume 7', exact: true })).toBeVisible();
+});
+
 test('a stored volume resumes after reload and a new tab without a file picker', async ({
   page,
   context,
@@ -347,6 +502,10 @@ test('the local copy and progress survive a full browser restart', async ({
     ).toBeVisible();
     await page.getByRole('button', { name: 'Library', exact: true }).click();
     await expect(page.getByText(/Last read: section 2/)).toBeVisible();
+    await page.getByRole('button', { name: 'Rename', exact: true }).click();
+    await page.getByRole('textbox', { name: 'Volume name' }).fill('Restart-safe volume');
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Restart-safe volume' })).toBeVisible();
   } finally {
     await first.close();
   }
@@ -354,7 +513,13 @@ test('the local copy and progress survive a full browser restart', async ({
   try {
     const page = await second.newPage();
     await page.goto('http://127.0.0.1:4177');
+    await expect(page.getByRole('heading', { name: 'Restart-safe volume' })).toBeVisible();
     await page.getByRole('button', { name: 'Resume', exact: true }).click();
+    await expect(
+      page
+        .getByRole('region', { name: 'Current publication' })
+        .getByRole('heading', { name: 'Restart-safe volume' }),
+    ).toBeVisible();
     await expect(
       page
         .frameLocator('.publication-reader-frame')

@@ -24,6 +24,7 @@ export interface PublicationDescriptor {
   mimeType: string;
   availability: PublicationAvailability;
   title?: string;
+  customTitle?: string;
   author?: string;
   spineLength?: number;
   lastOpenedAt?: number;
@@ -55,6 +56,7 @@ export interface PlatformBootstrapState {
 
 export interface PublicationLibraryUpdate {
   title?: string;
+  customTitle?: string;
   author?: string;
   spineLength?: number;
   lastOpenedAt?: number;
@@ -80,6 +82,7 @@ export interface NovelReaperPlatform {
 }
 
 export type PlatformErrorCode =
+  | 'INVALID_TITLE'
   | 'EMPTY_FILE'
   | 'FILE_TOO_LARGE'
   | 'INVALID_EPUB_EXTENSION'

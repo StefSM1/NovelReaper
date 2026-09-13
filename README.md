@@ -32,6 +32,11 @@ last chapter and reading position without selecting the file again. Library card
 read section. SHA-256 fingerprints identify the exact file even after renaming; another edition
 is kept separate. Only the active chapter is rendered, not the entire novel.
 
+Use **Rename** on a Library card to give a volume a custom name, then **Save** (or
+**Cancel** to keep the old name). The name appears in Library and above Contents,
+and survives reopening. This changes local metadata only: the original EPUB title,
+file, and reading progress remain unchanged. Names can contain 1–300 characters.
+
 Existing library cards need one file reselection to obtain a local copy. Existing progress is
 restored when that file still matches its old name, size, and modification time; old saves are
 retained. Preferences and progress remain local JSON records in `localStorage`. Removing a

@@ -76,6 +76,32 @@ describe('BrowserPlatformAdapter', () => {
     });
   });
 
+  it('preserves custom titles through metadata refresh, bootstrap, and file reselection', async () => {
+    const adapter = adapterFor(epubFile());
+    const result = await adapter.selectPublication();
+    if (result.status !== 'selected') throw new Error('Expected selection');
+    const id = result.publication.id;
+    await adapter.updateLibraryPublication(id, { customTitle: '  Volume 2  ' });
+    await adapter.updateLibraryPublication(id, { title: 'Original title' });
+    expect((await adapterFor().getBootstrapState()).library[0]).toMatchObject({
+      id,
+      customTitle: 'Volume 2',
+      title: 'Original title',
+      displayName: 'Novel.epub',
+    });
+    const reselected = await adapter.selectPublication();
+    expect(reselected).toMatchObject({
+      publication: { id, customTitle: 'Volume 2', title: 'Original title' },
+    });
+    const previous = localStorage.getItem(BROWSER_PREVIEW_STORAGE_KEY);
+    for (const customTitle of [' ', 'x'.repeat(301)]) {
+      await expect(adapter.updateLibraryPublication(id, { customTitle })).rejects.toMatchObject({
+        code: 'INVALID_TITLE',
+      });
+    }
+    expect(localStorage.getItem(BROWSER_PREVIEW_STORAGE_KEY)).toBe(previous);
+  });
+
   it('rejects failed metadata/removal writes and preserves the saved library', async () => {
     const adapter = adapterFor(epubFile());
     const selected = await adapter.selectPublication();

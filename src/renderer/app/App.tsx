@@ -37,6 +37,7 @@ import {
 import type { BrowserSafetyLevel } from '../../reader/strict-policy';
 import type { ReaderStateSnapshot, WindowStateSnapshot } from '../../shared/contracts/ipc';
 import { AppearancePanel } from './AppearancePanel';
+import { validateCustomTitle } from '../../platform/publication-title';
 import { LibraryScreen } from './LibraryScreen';
 import { VirtualizedToc } from './VirtualizedToc';
 
@@ -72,6 +73,7 @@ function descriptorFromSelection(publication: SelectedPublication): PublicationD
     availability: publication.storedLocally ? 'stored' : publication.availability,
     ...(publication.contentHash ? { contentHash: publication.contentHash } : {}),
     ...(publication.title ? { title: publication.title } : {}),
+    ...(publication.customTitle ? { customTitle: publication.customTitle } : {}),
     ...(publication.author ? { author: publication.author } : {}),
     ...(publication.spineLength ? { spineLength: publication.spineLength } : {}),
     ...(publication.lastOpenedAt ? { lastOpenedAt: publication.lastOpenedAt } : {}),
@@ -108,6 +110,7 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
   const [screen, setScreen] = useState<AppScreen>('library');
   const [mobileReaderView, setMobileReaderView] = useState<MobileReaderView>('reader');
   const [library, setLibrary] = useState<PublicationDescriptor[]>([]);
+  const [isRenaming, setIsRenaming] = useState(false);
   const [publication, setPublication] = useState<PublicationDescriptor | SelectedPublication>();
   const [parsedPublication, setParsedPublication] = useState<ReaderPublication>();
   const [readerLocation, setReaderLocation] = useState<ReaderRelocation>();
@@ -480,6 +483,35 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
     }
   };
 
+  const renameLibraryEntry = async (
+    entry: PublicationDescriptor,
+    value: string,
+  ): Promise<boolean> => {
+    if (isRenaming || isSelecting) return false;
+    setIsRenaming(true);
+    setOperationError(undefined);
+    try {
+      const customTitle = validateCustomTitle(value);
+      const entries = await platform.updateLibraryPublication(entry.id, { customTitle });
+      if (!entries.some((book) => book.id === entry.id && book.customTitle === customTitle))
+        throw new Error('Library entry is no longer available.');
+      setLibrary(entries);
+      const selected = sessionPublicationsRef.current.get(entry.id);
+      if (selected) sessionPublicationsRef.current.set(entry.id, { ...selected, customTitle });
+      setPublication((current) =>
+        current?.id === entry.id ? { ...current, customTitle } : current,
+      );
+      return true;
+    } catch {
+      setOperationError(
+        'The new title could not be saved. Your previous title is unchanged. Please retry.',
+      );
+      return false;
+    } finally {
+      setIsRenaming(false);
+    }
+  };
+
   const removeLibraryEntry = async (entry: PublicationDescriptor): Promise<boolean> => {
     setOperationError(undefined);
     try {
@@ -583,7 +615,7 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
           <button
             className="button button--primary titlebar__open"
             type="button"
-            disabled={!platform.capabilities.selectLocalPublication || isSelecting}
+            disabled={!platform.capabilities.selectLocalPublication || isSelecting || isRenaming}
             onClick={() => void selectPublication()}
           >
             {isSelecting ? 'Opening…' : 'Open EPUB'}
@@ -611,6 +643,7 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
           onOpenEntry={(entry) => void openLibraryEntry(entry)}
           progressByBook={libraryProgress}
           onRemoveEntry={removeLibraryEntry}
+          onRenameEntry={renameLibraryEntry}
           onDismissError={() => setOperationError(undefined)}
         />
       ) : (
@@ -630,7 +663,9 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
               )}
               <div className="publication-summary__text">
                 <h2>
-                  {parsedPublication?.metadata.title ??
+                  {library.find((entry) => entry.id === publication?.id)?.customTitle ??
+                    publication?.customTitle ??
+                    parsedPublication?.metadata.title ??
                     publication?.displayName.replace(/\.epub$/i, '') ??
                     'No book selected'}
                 </h2>

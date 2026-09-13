@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import type { PublicationDescriptor } from '../../platform/contracts';
 import type { StoredReaderProgress } from '../../reader/progress-state';
+import { MAX_CUSTOM_TITLE_LENGTH, publicationTitle } from '../../platform/publication-title';
 
 interface LibraryScreenProps {
   entries: PublicationDescriptor[];
@@ -13,6 +14,7 @@ interface LibraryScreenProps {
   onOpenNew: () => void;
   onOpenEntry: (entry: PublicationDescriptor) => void;
   onRemoveEntry: (entry: PublicationDescriptor) => Promise<boolean>;
+  onRenameEntry: (entry: PublicationDescriptor, title: string) => Promise<boolean>;
   onDismissError: () => void;
 }
 
@@ -30,10 +32,41 @@ export function LibraryScreen({
   onOpenNew,
   onOpenEntry,
   onRemoveEntry,
+  onRenameEntry,
   onDismissError,
 }: LibraryScreenProps): React.JSX.Element {
   const [pendingRemovalId, setPendingRemovalId] = useState<string>();
   const [removingId, setRemovingId] = useState<string>();
+  const [editingId, setEditingId] = useState<string>();
+  const [draftTitle, setDraftTitle] = useState('');
+  const [savingId, setSavingId] = useState<string>();
+  const [renameError, setRenameError] = useState<string>();
+  const titleInputRef = useRef<HTMLInputElement>(null);
+  const renameTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const savingRef = useRef(false);
+  const busy = isSelecting || Boolean(removingId) || Boolean(savingId);
+
+  useEffect(() => {
+    if (editingId) {
+      titleInputRef.current?.focus();
+      titleInputRef.current?.select();
+    } else renameTriggerRef.current?.focus();
+  }, [editingId]);
+
+  const saveRename = async (entry: PublicationDescriptor): Promise<void> => {
+    if (busy || savingRef.current || !draftTitle.trim()) return;
+    savingRef.current = true;
+    setSavingId(entry.id);
+    setRenameError(undefined);
+    try {
+      if (await onRenameEntry(entry, draftTitle.trim())) setEditingId(undefined);
+    } catch {
+      setRenameError('The title could not be saved. Please retry.');
+    } finally {
+      savingRef.current = false;
+      setSavingId(undefined);
+    }
+  };
 
   const confirmRemoval = async (entry: PublicationDescriptor): Promise<void> => {
     if (removingId) return;
@@ -92,6 +125,7 @@ export function LibraryScreen({
             const stored = entry.availability === 'stored';
             const progress = progressByBook[entry.id];
             const position = progress?.positions[String(progress.currentSpineIndex)];
+            const title = publicationTitle(entry);
             return (
               <li className="library-book" key={entry.id}>
                 <div className="library-book__spine" aria-hidden="true">
@@ -105,7 +139,7 @@ export function LibraryScreen({
                         ? 'This session only'
                         : 'Select once to save locally'}
                   </p>
-                  <h2>{entry.title ?? entry.displayName.replace(/\.epub$/i, '')}</h2>
+                  <h2 title={title}>{title}</h2>
                   <span>{entry.author ?? entry.displayName}</span>
                   <small>{formatSections(entry.spineLength)}</small>
                   {progress ? (
@@ -115,20 +149,80 @@ export function LibraryScreen({
                         : `Last read: section ${progress.currentSpineIndex + 1}${position ? ` · ${Math.round(position.fractionInChapter * 100)}% through section` : ''}`}
                     </small>
                   ) : null}
+                  {editingId === entry.id ? (
+                    <form
+                      className="library-book__rename"
+                      aria-label={`Rename ${title}`}
+                      aria-busy={savingId === entry.id}
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        void saveRename(entry);
+                      }}
+                    >
+                      <label htmlFor={`volume-title-${entry.id}`}>Volume name</label>
+                      <input
+                        ref={titleInputRef}
+                        id={`volume-title-${entry.id}`}
+                        value={draftTitle}
+                        maxLength={MAX_CUSTOM_TITLE_LENGTH}
+                        required
+                        disabled={busy}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Escape' && !savingRef.current) {
+                            event.preventDefault();
+                            setEditingId(undefined);
+                          }
+                        }}
+                        onChange={(event) => setDraftTitle(event.target.value)}
+                      />
+                      <div className="library-book__rename-actions">
+                        <button
+                          className="button button--primary"
+                          type="submit"
+                          disabled={busy || !draftTitle.trim()}
+                        >
+                          {savingId === entry.id ? 'Saving…' : 'Save'}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => setEditingId(undefined)}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                      {renameError ? <span role="alert">{renameError}</span> : null}
+                    </form>
+                  ) : null}
                   <div className="library-book__actions">
                     <button
                       className="button button--primary"
                       type="button"
-                      disabled={isSelecting || Boolean(removingId)}
+                      disabled={busy || Boolean(editingId)}
                       onClick={() => onOpenEntry(entry)}
                     >
                       {isSelecting ? 'Opening…' : ready || stored ? 'Resume' : 'Select again'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy || Boolean(editingId)}
+                      onClick={(event) => {
+                        if (editingId) return;
+                        renameTriggerRef.current = event.currentTarget;
+                        setPendingRemovalId(undefined);
+                        setDraftTitle(title);
+                        setRenameError(undefined);
+                        onDismissError();
+                        setEditingId(entry.id);
+                      }}
+                    >
+                      Rename
                     </button>
                     {pendingRemovalId === entry.id ? (
                       <div
                         className="library-book__remove-confirmation"
                         role="group"
-                        aria-label={`Remove ${entry.title ?? entry.displayName} from the library`}
+                        aria-label={`Remove ${title} from the library`}
                       >
                         <span role="status">
                           {stored
@@ -158,7 +252,7 @@ export function LibraryScreen({
                     ) : (
                       <button
                         type="button"
-                        disabled={isSelecting || Boolean(removingId)}
+                        disabled={busy || Boolean(editingId)}
                         onClick={() => setPendingRemovalId(entry.id)}
                       >
                         Remove

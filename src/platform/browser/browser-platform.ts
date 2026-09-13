@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { validateCustomTitle } from '../publication-title';
 import {
   BrowserLibraryStore,
   fingerprintEpub,
@@ -32,6 +33,7 @@ const storedPublicationSchema = z
     mimeType: z.string().max(120),
     availability: z.literal('reselect-required'),
     title: z.string().min(1).max(300).optional(),
+    customTitle: z.string().trim().min(1).max(300).optional(),
     author: z.string().min(1).max(300).optional(),
     spineLength: z.number().int().positive().max(100_000).optional(),
     lastOpenedAt: z.number().int().nonnegative().optional(),
@@ -156,6 +158,7 @@ function toStoredPublication(publication: SelectedPublication): StoredPublicatio
     mimeType: publication.mimeType,
     availability: 'reselect-required',
     ...(publication.title ? { title: publication.title } : {}),
+    ...(publication.customTitle ? { customTitle: publication.customTitle } : {}),
     ...(publication.author ? { author: publication.author } : {}),
     ...(publication.spineLength ? { spineLength: publication.spineLength } : {}),
     ...(publication.lastOpenedAt === undefined ? {} : { lastOpenedAt: publication.lastOpenedAt }),
@@ -171,6 +174,7 @@ function unavailablePublication(stored: StoredPublication): PublicationDescripto
     mimeType: stored.mimeType,
     availability: stored.availability,
     ...(stored.title ? { title: stored.title } : {}),
+    ...(stored.customTitle ? { customTitle: stored.customTitle } : {}),
     ...(stored.author ? { author: stored.author } : {}),
     ...(stored.spineLength ? { spineLength: stored.spineLength } : {}),
     ...(stored.lastOpenedAt === undefined ? {} : { lastOpenedAt: stored.lastOpenedAt }),
@@ -358,6 +362,7 @@ export class BrowserPlatformAdapter implements NovelReaperPlatform {
       file,
       lastOpenedAt: Date.now(),
       ...(existing?.title ? { title: existing.title } : {}),
+      ...(existing?.customTitle ? { customTitle: existing.customTitle } : {}),
       ...(existing?.author ? { author: existing.author } : {}),
       ...(existing?.spineLength ? { spineLength: existing.spineLength } : {}),
     };
@@ -408,10 +413,12 @@ export class BrowserPlatformAdapter implements NovelReaperPlatform {
     }
   }
 
-  public updateLibraryPublication(
+  public async updateLibraryPublication(
     id: string,
     update: PublicationLibraryUpdate,
   ): Promise<PublicationDescriptor[]> {
+    if (update.customTitle !== undefined)
+      update = { ...update, customTitle: validateCustomTitle(update.customTitle) };
     if (this.libraryStore)
       return this.readyLibrary().then(() => this.libraryStore!.update(id, update));
     const stored = readStoredLibrary(this.storage);
@@ -422,6 +429,7 @@ export class BrowserPlatformAdapter implements NovelReaperPlatform {
       return {
         ...entry,
         ...(title ? { title } : {}),
+        ...(update.customTitle !== undefined ? { customTitle: update.customTitle } : {}),
         ...(author ? { author } : {}),
         ...(update.spineLength && update.spineLength <= 100_000
           ? { spineLength: Math.round(update.spineLength) }
