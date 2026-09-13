@@ -1,4 +1,10 @@
 import { z } from 'zod';
+import {
+  BrowserLibraryStore,
+  fingerprintEpub,
+  MAX_LOCAL_EPUB_BYTES,
+  type BrowserLibraryStorage,
+} from './browser-library-store';
 
 import type { ReaderBounds, ReaderStateSnapshot } from '../../shared/contracts/ipc';
 import {
@@ -12,7 +18,7 @@ import {
   type SelectedPublication,
 } from '../contracts';
 
-export const MAX_BROWSER_EPUB_BYTES = 512 * 1024 * 1024;
+export const MAX_BROWSER_EPUB_BYTES = MAX_LOCAL_EPUB_BYTES;
 export const BROWSER_PREVIEW_STORAGE_KEY = 'novelreaper:browser-preview:v1';
 
 const ZIP_LOCAL_FILE_HEADER = [0x50, 0x4b, 0x03, 0x04] as const;
@@ -53,6 +59,8 @@ interface BrowserPlatformDependencies {
   storage?: Storage;
   pickFile?: () => Promise<File | undefined>;
   createId?: () => string;
+  libraryStore?: BrowserLibraryStorage;
+  fingerprint?: (file: File) => Promise<string>;
 }
 
 function boundedDisplayName(name: string): string {
@@ -220,24 +228,56 @@ export class BrowserPlatformAdapter implements NovelReaperPlatform {
   private readonly storage: Storage | undefined;
   private readonly pickFile: () => Promise<File | undefined>;
   private readonly createId: () => string;
+  private readonly libraryStore: BrowserLibraryStorage | undefined;
+  private readonly fingerprint: (file: File) => Promise<string>;
+  private libraryReady: Promise<void> | undefined;
 
   public constructor(dependencies: BrowserPlatformDependencies) {
     this.document = dependencies.document;
     this.storage = dependencies.storage;
     this.pickFile = dependencies.pickFile ?? createFilePicker(dependencies.document);
     this.createId = dependencies.createId ?? (() => crypto.randomUUID());
+    this.libraryStore = dependencies.libraryStore;
+    this.fingerprint = dependencies.fingerprint ?? fingerprintEpub;
     this.capabilities = Object.freeze({
       selectLocalPublication: true,
-      durableSourceAccess: false,
+      durableSourceAccess: Boolean(this.libraryStore),
       relink: false,
       nativeWindowControls: false,
       fullscreen: typeof dependencies.document.documentElement.requestFullscreen === 'function',
     });
   }
 
-  public getBootstrapState(): Promise<PlatformBootstrapState> {
+  private async readyLibrary(): Promise<void> {
+    if (!this.libraryStore) return;
+    this.libraryReady ??= this.libraryStore.initialize(
+      readStoredLibrary(this.storage).publications.map(unavailablePublication),
+    );
+    try {
+      await this.libraryReady;
+    } catch (error) {
+      this.libraryReady = undefined;
+      throw error;
+    }
+  }
+
+  public async getBootstrapState(): Promise<PlatformBootstrapState> {
     const stored = readStoredLibrary(this.storage);
-    const library = stored.publications.map(unavailablePublication);
+    let library = stored.publications.map(unavailablePublication);
+    const notices = stored.warning ? [stored.warning] : [];
+    if (this.libraryStore) {
+      try {
+        await this.readyLibrary();
+        library = await this.libraryStore.list();
+      } catch {
+        notices.push(
+          'Saved books are temporarily unavailable. Close other NovelReaper tabs and reload, or select an EPUB to read this session.',
+        );
+      }
+    } else
+      notices.push(
+        'This browser cannot store EPUB copies. Files must be selected again after closing the tab.',
+      );
     const recentPublication = library[0];
 
     return Promise.resolve({
@@ -249,7 +289,7 @@ export class BrowserPlatformAdapter implements NovelReaperPlatform {
       window: this.currentWindowState(),
       library,
       ...(recentPublication ? { recentPublication } : {}),
-      notices: stored.warning ? [stored.warning] : [],
+      notices,
     });
   }
 
@@ -258,6 +298,54 @@ export class BrowserPlatformAdapter implements NovelReaperPlatform {
     if (!file) return { status: 'cancelled' };
 
     await validateEpubFile(file);
+    if (this.libraryStore) {
+      let descriptor: PublicationDescriptor = {
+        id: this.createId(),
+        displayName: boundedDisplayName(file.name),
+        fileSize: file.size,
+        lastModified: Math.max(0, Math.round(file.lastModified)),
+        mimeType: file.type.slice(0, 120),
+        availability: 'selected',
+      };
+      try {
+        const contentHash = await this.fingerprint(file);
+        descriptor = { ...descriptor, contentHash };
+        await this.readyLibrary();
+        const entries = await this.libraryStore.list();
+        const existing =
+          entries.find((entry) => entry.contentHash === contentHash) ??
+          entries.find((entry) => !entry.contentHash && sameSource(entry, file));
+        descriptor = {
+          ...descriptor,
+          ...existing,
+          displayName: existing?.displayName ?? boundedDisplayName(file.name),
+          fileSize: file.size,
+          lastModified: existing?.lastModified ?? Math.max(0, Math.round(file.lastModified)),
+          mimeType: file.type.slice(0, 120),
+          availability: 'stored',
+          contentHash,
+          lastOpenedAt: Date.now(),
+        };
+        const saved = await this.libraryStore.save(descriptor, file);
+        return {
+          status: 'selected',
+          publication: { ...saved, availability: 'selected', storedLocally: true, file },
+        };
+      } catch (error) {
+        if (error instanceof PlatformOperationError && error.code === 'LIBRARY_FULL') throw error;
+        // Reading remains possible without claiming that a failed import was saved.
+        return {
+          status: 'selected',
+          publication: {
+            ...descriptor,
+            availability: 'selected',
+            file,
+          },
+          warning:
+            'The EPUB could not be saved on this device (storage may be full or blocked). This import is available for this session only. Any previously saved copies are unchanged.',
+        };
+      }
+    }
     const stored = readStoredLibrary(this.storage);
     const existing = stored.publications.find((entry) => sameSource(entry, file));
     const publication: SelectedPublication = {
@@ -290,10 +378,42 @@ export class BrowserPlatformAdapter implements NovelReaperPlatform {
     };
   }
 
+  public async openPublication(id: string): Promise<PublicationSelectionResult> {
+    if (!this.libraryStore)
+      return { status: 'unsupported', reason: 'Select this EPUB again to read it.' };
+    try {
+      await this.readyLibrary();
+      const saved = await this.libraryStore.readFile(id);
+      if (!saved)
+        throw new PlatformOperationError(
+          'STORED_FILE_MISSING',
+          'The saved EPUB is missing. Select the original file again; your progress is still kept separately.',
+        );
+      await validateEpubFile(saved.file);
+      return {
+        status: 'selected',
+        publication: {
+          ...saved.book,
+          availability: 'selected',
+          storedLocally: true,
+          file: saved.file,
+        },
+      };
+    } catch (error) {
+      if (error instanceof PlatformOperationError) throw error;
+      throw new PlatformOperationError(
+        'STORAGE_UNAVAILABLE',
+        'The saved EPUB could not be opened. Close other NovelReaper tabs and retry, or select the original file.',
+      );
+    }
+  }
+
   public updateLibraryPublication(
     id: string,
     update: PublicationLibraryUpdate,
   ): Promise<PublicationDescriptor[]> {
+    if (this.libraryStore)
+      return this.readyLibrary().then(() => this.libraryStore!.update(id, update));
     const stored = readStoredLibrary(this.storage);
     const publications = stored.publications.map((entry) => {
       if (entry.id !== id) return entry;
@@ -320,6 +440,7 @@ export class BrowserPlatformAdapter implements NovelReaperPlatform {
   }
 
   public removeLibraryPublication(id: string): Promise<PublicationDescriptor[]> {
+    if (this.libraryStore) return this.readyLibrary().then(() => this.libraryStore!.remove(id));
     const stored = readStoredLibrary(this.storage);
     const publications = stored.publications.filter((entry) => entry.id !== id);
     if (!writeStoredLibrary(this.storage, publications)) {
@@ -392,5 +513,15 @@ export function createBrowserPlatform(): BrowserPlatformAdapter {
   } catch {
     storage = undefined;
   }
-  return new BrowserPlatformAdapter({ document, ...(storage ? { storage } : {}) });
+  let factory: IDBFactory | undefined;
+  try {
+    factory = window.indexedDB;
+  } catch {
+    factory = undefined;
+  }
+  return new BrowserPlatformAdapter({
+    document,
+    ...(storage ? { storage } : {}),
+    ...(factory ? { libraryStore: new BrowserLibraryStore(factory) } : {}),
+  });
 }

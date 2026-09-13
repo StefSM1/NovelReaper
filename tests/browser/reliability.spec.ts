@@ -87,17 +87,21 @@ test('a failed real browser storage write keeps the library card and shows an er
   await openFixture(page);
   await page.getByRole('button', { name: 'Library', exact: true }).click();
   await page.evaluate(() => {
-    const setItem = Storage.prototype.setItem.bind(window.localStorage);
-    Storage.prototype.setItem = function (key, value) {
-      if (key === 'novelreaper:browser-preview:v1')
-        throw new DOMException('Full', 'QuotaExceededError');
-      setItem(key, value);
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- Preserve the native receiver when simulating an IndexedDB failure.
+    const originalDelete = IDBObjectStore.prototype.delete;
+    IDBObjectStore.prototype.delete = function (key) {
+      if (this.name === 'books') throw new DOMException('Storage blocked', 'UnknownError');
+      return originalDelete.call(this, key);
     };
   });
   await page.getByRole('button', { name: 'Remove', exact: true }).click();
-  await page.getByRole('button', { name: 'Remove card', exact: true }).click();
+  await page.getByRole('button', { name: 'Remove copy', exact: true }).click();
   await expect(page.getByText('That library card could not be removed.')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Synthetic Reader Test' })).toBeVisible();
   await page.reload();
   await expect(page.getByRole('heading', { name: 'Synthetic Reader Test' })).toBeVisible();
+  await page.getByRole('button', { name: 'Resume', exact: true }).click();
+  await expect(
+    page.frameLocator('.publication-reader-frame').getByRole('heading', { name: 'A Quiet Start' }),
+  ).toBeVisible();
 });

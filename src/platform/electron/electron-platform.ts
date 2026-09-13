@@ -41,6 +41,10 @@ export class ElectronPlatformAdapter implements NovelReaperPlatform {
     return Promise.resolve([]);
   }
 
+  public openPublication(): Promise<PublicationSelectionResult> {
+    return Promise.resolve({ status: 'unsupported', reason: 'Desktop EPUB import is paused.' });
+  }
+
   public removeLibraryPublication(): Promise<PublicationDescriptor[]> {
     return Promise.resolve([]);
   }

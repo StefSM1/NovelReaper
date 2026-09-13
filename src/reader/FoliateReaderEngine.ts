@@ -547,21 +547,18 @@ export class FoliateReaderEngine implements ReaderEngine {
   private restoreCfi(document: Document, cfi: string): boolean {
     try {
       const view = document.defaultView;
-      if (!view) return false;
+      // A spine-only CFI identifies a chapter, not a position within that chapter.
+      if (!view || !cfi.includes('!')) return false;
       const resolved = this.book?.resolveCFI?.(cfi);
       if (!resolved || resolved.index !== this.activeSectionIndex || !resolved.anchor) return false;
       const anchor = resolved.anchor(document);
       if (anchor instanceof view.Element) {
+        if (anchor === document.body || anchor === document.documentElement) return false;
         anchor.scrollIntoView({ block: 'start', behavior: 'instant' });
         return true;
       }
       if (anchor instanceof view.Range) {
-        const element =
-          anchor.startContainer.nodeType === Node.ELEMENT_NODE
-            ? (anchor.startContainer as Element)
-            : anchor.startContainer.parentElement;
-        element?.scrollIntoView({ block: 'start', behavior: 'instant' });
-        return Boolean(element);
+        return this.scrollToTextRange(document, anchor);
       }
       return false;
     } catch {
@@ -569,17 +566,32 @@ export class FoliateReaderEngine implements ReaderEngine {
     }
   }
 
+  private scrollToTextRange(document: Document, range: Range): boolean {
+    const view = document.defaultView;
+    const rect = range.getBoundingClientRect();
+    if (!view || !Number.isFinite(rect.top) || rect.height === 0) return false;
+    // Capture samples a caret 28% down the viewport. Restore that text offset,
+    // not its parent paragraph (which may span many screens).
+    view.scrollBy({ top: rect.top - Math.max(24, view.innerHeight * 0.28), behavior: 'instant' });
+    return true;
+  }
+
   private restoreTextQuote(document: Document, textQuote: string): boolean {
     const quote = textQuote.replace(/\s+/g, ' ').trim();
     if (!quote) return false;
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let match: Range | undefined;
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      const normalized = node.textContent?.replace(/\s+/g, ' ').trim() ?? '';
-      if (!normalized.includes(quote)) continue;
-      node.parentElement?.scrollIntoView({ block: 'start', behavior: 'instant' });
-      return true;
+      const text = node.textContent ?? '';
+      const offset = text.indexOf(quote);
+      if (offset < 0) continue;
+      // Repeated phrases cannot identify a unique position; use the saved fraction.
+      if (match || text.indexOf(quote, offset + 1) >= 0) return false;
+      match = document.createRange();
+      match.setStart(node, offset);
+      match.setEnd(node, offset + quote.length);
     }
-    return false;
+    return match ? this.scrollToTextRange(document, match) : false;
   }
 
   private captureTextQuote(document: Document): string | undefined {

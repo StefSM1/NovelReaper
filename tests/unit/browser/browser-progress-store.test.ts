@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   browserProgressStorageKey,
+  browserLegacyProgressStorageKey,
   BrowserProgressStore,
   DebouncedProgressWriter,
 } from '../../../src/platform/browser/browser-progress-store';
@@ -102,5 +103,39 @@ describe('browser progress persistence', () => {
     expect(store.load()).toEqual(progress);
     writer.dispose();
     expect(save).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses the content fingerprint regardless of filename or modification date', () => {
+    const identified = { ...publication, contentHash: 'a'.repeat(64) };
+    expect(browserProgressStorageKey(identified)).toBe(
+      browserProgressStorageKey({
+        ...identified,
+        displayName: 'Renamed.epub',
+        lastModified: 999,
+      }),
+    );
+    expect(browserProgressStorageKey(identified)).not.toBe(
+      browserProgressStorageKey({
+        ...identified,
+        contentHash: 'b'.repeat(64),
+      }),
+    );
+  });
+
+  it('restores legacy progress without deleting it or replacing newer fingerprint progress', () => {
+    const storage = new MemoryStorage();
+    const identified = { ...publication, contentHash: 'a'.repeat(64) };
+    const legacyKey = browserLegacyProgressStorageKey(identified);
+    storage.setItem(legacyKey, JSON.stringify(progress));
+    const store = new BrowserProgressStore(
+      storage,
+      browserProgressStorageKey(identified),
+      legacyKey,
+    );
+    expect(store.load()).toEqual(progress);
+    const newer = { ...progress, updatedAt: 20, currentSpineIndex: 3 };
+    expect(store.save(newer)).toBe(true);
+    expect(store.load()).toEqual(newer);
+    expect(JSON.parse(storage.getItem(legacyKey)!)).toEqual(progress);
   });
 });

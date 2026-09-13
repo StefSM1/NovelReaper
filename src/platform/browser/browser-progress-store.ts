@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import type { SelectedPublication } from '../contracts';
+import type { PublicationDescriptor } from '../contracts';
 import type { StoredReaderProgress } from '../../reader/progress-state';
 
 const locatorSchema = z
@@ -24,9 +24,15 @@ const storedProgressSchema = z
   })
   .strict();
 
-export function browserProgressStorageKey(publication: SelectedPublication): string {
+export function browserLegacyProgressStorageKey(publication: PublicationDescriptor): string {
   const name = encodeURIComponent(publication.displayName).slice(0, 180);
   return `novelreaper:browser-progress:v1:${name}:${publication.fileSize}:${publication.lastModified}`;
+}
+
+export function browserProgressStorageKey(publication: PublicationDescriptor): string {
+  return publication.contentHash
+    ? `novelreaper:browser-progress:sha256:${publication.contentHash}`
+    : browserLegacyProgressStorageKey(publication);
 }
 
 export class BrowserProgressStore {
@@ -35,12 +41,15 @@ export class BrowserProgressStore {
   public constructor(
     private readonly storage: Storage | undefined,
     private readonly key: string,
+    private readonly legacyKey?: string,
   ) {}
 
   public load(): StoredReaderProgress | undefined {
     if (!this.storage) return undefined;
     try {
-      const value = this.storage.getItem(this.key);
+      const value =
+        this.storage.getItem(this.key) ??
+        (this.legacyKey ? this.storage.getItem(this.legacyKey) : null);
       if (!value) return undefined;
       const parsed = storedProgressSchema.safeParse(JSON.parse(value));
       if (parsed.success) {
@@ -81,6 +90,20 @@ export class BrowserProgressStore {
     } catch {
       return false;
     }
+  }
+}
+
+export function loadPublicationProgress(
+  publication: PublicationDescriptor,
+): StoredReaderProgress | undefined {
+  try {
+    return new BrowserProgressStore(
+      window.localStorage,
+      browserProgressStorageKey(publication),
+      browserLegacyProgressStorageKey(publication),
+    ).load();
+  } catch {
+    return undefined;
   }
 }
 

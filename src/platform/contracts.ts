@@ -14,7 +14,7 @@ export interface PlatformCapabilities {
   fullscreen: boolean;
 }
 
-export type PublicationAvailability = 'selected' | 'reselect-required';
+export type PublicationAvailability = 'selected' | 'stored' | 'reselect-required';
 
 export interface PublicationDescriptor {
   id: string;
@@ -27,11 +27,13 @@ export interface PublicationDescriptor {
   author?: string;
   spineLength?: number;
   lastOpenedAt?: number;
+  contentHash?: string;
 }
 
 export interface SelectedPublication extends PublicationDescriptor {
   availability: 'selected';
   file: File;
+  storedLocally?: boolean;
 }
 
 export type PublicationSelectionResult =
@@ -63,6 +65,7 @@ export interface NovelReaperPlatform {
   readonly capabilities: PlatformCapabilities;
   getBootstrapState: () => Promise<PlatformBootstrapState>;
   selectPublication: () => Promise<PublicationSelectionResult>;
+  openPublication: (id: string) => Promise<PublicationSelectionResult>;
   updateLibraryPublication: (
     id: string,
     update: PublicationLibraryUpdate,
@@ -82,6 +85,8 @@ export type PlatformErrorCode =
   | 'INVALID_EPUB_EXTENSION'
   | 'INVALID_ZIP_SIGNATURE'
   | 'STORAGE_UNAVAILABLE'
+  | 'STORED_FILE_MISSING'
+  | 'LIBRARY_FULL'
   | 'UNSUPPORTED_FEATURE';
 
 export class PlatformOperationError extends Error {

@@ -37,6 +37,7 @@ const reviewPlatform: NovelReaperPlatform = {
       notices: ['B5 review fixture · development only'],
     }),
   selectPublication: () => Promise.resolve({ status: 'selected', publication }),
+  openPublication: () => Promise.resolve({ status: 'selected', publication }),
   updateLibraryPublication: () => Promise.resolve([]),
   removeLibraryPublication: () => Promise.resolve([]),
   setReaderBounds: () => Promise.resolve(),

@@ -910,6 +910,15 @@ button:disabled {
   padding-top: 1.25rem;
 }
 
+.library-screen__storage-note {
+  font-size: 0.8rem;
+}
+
+.library-book__progress {
+  display: block;
+  margin-top: 0.45rem;
+}
+
 .library-book__remove-confirmation {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

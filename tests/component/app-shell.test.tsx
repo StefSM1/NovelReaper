@@ -123,6 +123,7 @@ function createPlatform(options?: {
         reason: 'Not available in this test adapter.',
       },
     ),
+    openPublication: vi.fn().mockResolvedValue({ status: 'unsupported', reason: 'Select again' }),
     updateLibraryPublication: vi.fn().mockResolvedValue([]),
     removeLibraryPublication: vi.fn().mockResolvedValue([]),
     setReaderBounds: vi.fn().mockResolvedValue(undefined),

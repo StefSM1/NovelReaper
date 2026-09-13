@@ -117,7 +117,10 @@ function syntheticChapter(title: string, text: string): string {
       <body><h1>${title}</h1><p>${text}</p></body></html>`;
 }
 
-export function createSyntheticEpub(options?: { fixedLayout?: boolean }): File {
+export function createSyntheticEpub(options?: {
+  fixedLayout?: boolean;
+  longChapter?: boolean;
+}): File {
   const packageDocument = `<?xml version="1.0" encoding="UTF-8"?>
     <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="book-id">
       <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
@@ -146,7 +149,15 @@ export function createSyntheticEpub(options?: { fixedLayout?: boolean }): File {
     ['META-INF/container.xml', containerDocument()],
     ['OEBPS/package.opf', packageDocument],
     ['OEBPS/nav.xhtml', nav],
-    ['OEBPS/chapter-1.xhtml', syntheticChapter('A Quiet Start', 'A legal synthetic chapter.')],
+    [
+      'OEBPS/chapter-1.xhtml',
+      syntheticChapter(
+        'A Quiet Start',
+        options?.longChapter
+          ? 'A legal synthetic chapter with enough text to test reading position. '.repeat(3000)
+          : 'A legal synthetic chapter.',
+      ),
+    ],
     ['OEBPS/chapter-2.xhtml', syntheticChapter('The Second Page', 'Nothing leaves this fixture.')],
   ]);
   const archiveBuffer = archive.buffer.slice(

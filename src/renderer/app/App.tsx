@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import {
   platformErrorMessage,
@@ -8,6 +8,8 @@ import {
 } from '../../platform/contracts';
 import {
   browserProgressStorageKey,
+  browserLegacyProgressStorageKey,
+  loadPublicationProgress,
   BrowserProgressStore,
   DebouncedProgressWriter,
 } from '../../platform/browser/browser-progress-store';
@@ -30,6 +32,7 @@ import {
   overallProgress,
   storedReaderProgress,
   type ReaderProgressState,
+  type StoredReaderProgress,
 } from '../../reader/progress-state';
 import type { BrowserSafetyLevel } from '../../reader/strict-policy';
 import type { ReaderStateSnapshot, WindowStateSnapshot } from '../../shared/contracts/ipc';
@@ -66,7 +69,8 @@ function descriptorFromSelection(publication: SelectedPublication): PublicationD
     fileSize: publication.fileSize,
     lastModified: publication.lastModified,
     mimeType: publication.mimeType,
-    availability: publication.availability,
+    availability: publication.storedLocally ? 'stored' : publication.availability,
+    ...(publication.contentHash ? { contentHash: publication.contentHash } : {}),
     ...(publication.title ? { title: publication.title } : {}),
     ...(publication.author ? { author: publication.author } : {}),
     ...(publication.spineLength ? { spineLength: publication.spineLength } : {}),
@@ -175,7 +179,11 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
     } catch {
       storage = undefined;
     }
-    const progressStore = new BrowserProgressStore(storage, browserProgressStorageKey(publication));
+    const progressStore = new BrowserProgressStore(
+      storage,
+      browserProgressStorageKey(publication),
+      browserLegacyProgressStorageKey(publication),
+    );
     const savedProgress = progressStore.load();
     const progressLoadWarning = progressStore.takeLoadWarning();
     const initialLocator = savedProgress?.positions[String(savedProgress.currentSpineIndex)];
@@ -304,6 +312,19 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
     };
   }, [platform, publication, readerAttempt, readerEngineFactory, screen]);
 
+  const libraryProgress = useMemo(() => {
+    const saved: Record<string, StoredReaderProgress> = {};
+    if (screen !== 'library') return saved;
+    for (const entry of library) {
+      const progress =
+        entry.id === publication?.id && readerProgress
+          ? storedReaderProgress(readerProgress)
+          : loadPublicationProgress(entry);
+      if (progress) saved[entry.id] = progress;
+    }
+    return saved;
+  }, [library, screen, readerProgress, publication]);
+
   const commitPreferences = useCallback(
     (next: BrowserReaderPreferences): void => {
       preferencesRef.current = next;
@@ -421,15 +442,42 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
     }
   };
 
-  const openLibraryEntry = (entry: PublicationDescriptor): void => {
-    const selected = sessionPublicationsRef.current.get(entry.id);
-    if (!selected) {
+  const openLibraryEntry = async (entry: PublicationDescriptor): Promise<void> => {
+    if (isSelecting) return;
+    let selected = sessionPublicationsRef.current.get(entry.id);
+    if (!selected && entry.availability !== 'stored') {
       void selectPublication();
       return;
     }
-    setPublication(selected);
-    setMobileReaderView('reader');
-    setScreen('reader');
+    setIsSelecting(true);
+    setOperationError(undefined);
+    try {
+      if (!selected) {
+        const result = await platform.openPublication(entry.id);
+        if (result.status === 'unsupported') {
+          setOperationError(result.reason);
+          return;
+        }
+        if (result.status !== 'selected') return;
+        selected = result.publication;
+        sessionPublicationsRef.current.set(selected.id, selected);
+        if (result.warning) setNotices((current) => [...current, result.warning!]);
+      }
+      setPublication(selected);
+      setMobileReaderView('reader');
+      setScreen('reader');
+    } catch (error) {
+      setOperationError(platformErrorMessage(error));
+      if (error instanceof Error && 'code' in error && error.code === 'STORED_FILE_MISSING') {
+        setLibrary((current) =>
+          current.map((book) =>
+            book.id === entry.id ? { ...book, availability: 'reselect-required' } : book,
+          ),
+        );
+      }
+    } finally {
+      setIsSelecting(false);
+    }
   };
 
   const removeLibraryEntry = async (entry: PublicationDescriptor): Promise<boolean> => {
@@ -560,7 +608,8 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
           error={operationError}
           hasSessionFile={(id) => sessionPublicationsRef.current.has(id)}
           onOpenNew={() => void selectPublication()}
-          onOpenEntry={openLibraryEntry}
+          onOpenEntry={(entry) => void openLibraryEntry(entry)}
+          progressByBook={libraryProgress}
           onRemoveEntry={removeLibraryEntry}
           onDismissError={() => setOperationError(undefined)}
         />
