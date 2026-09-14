@@ -24,6 +24,14 @@ one serialized navigation path with explicit completion rules. Light/Dark themes
 fonts, font size, line spacing, page width, Focus mode, fullscreen, and the virtualized Contents rail
 are functional and persist where browser storage permits.
 
+On screens up to 1050px wide, the reader uses a reading-first layout with a small
+floating **Library / Contents / Appearance** bar. Contents opens a narrow left
+drawer at the current chapter; Appearance opens a compact, scrollable bottom popup
+with live changes visible in the text above. Close either with **Close**, Escape,
+or a tap outside. The reader stays mounted behind the panels, preserving position.
+Desktop layout and its saved focus preference remain unchanged. Phone-sized browser
+checks are automated; physical-phone acceptance remains part of the web rollout.
+
 ## Local library and progress
 
 Import a volume with **Open EPUB** once. NovelReaper saves a compressed EPUB copy and its

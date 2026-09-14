@@ -40,6 +40,7 @@ import { AppearancePanel } from './AppearancePanel';
 import { validateCustomTitle } from '../../platform/publication-title';
 import { LibraryScreen } from './LibraryScreen';
 import { VirtualizedToc } from './VirtualizedToc';
+import { COMPACT_READER_QUERY, MobileReaderPanel, useCompactReader } from './MobileReaderPanel';
 
 const INITIAL_READER_STATE: ReaderStateSnapshot = {
   status: 'idle',
@@ -94,6 +95,7 @@ type AppScreen = 'library' | 'reader';
 type MobileReaderView = 'appearance' | 'contents' | 'reader';
 
 export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Element {
+  const isCompactReader = useCompactReader();
   const readerFrameRef = useRef<HTMLDivElement>(null);
   const browserReaderHostRef = useRef<HTMLDivElement>(null);
   const browserReaderEngineRef = useRef<ReaderEngine | undefined>(undefined);
@@ -109,6 +111,12 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
   });
   const [screen, setScreen] = useState<AppScreen>('library');
   const [mobileReaderView, setMobileReaderView] = useState<MobileReaderView>('reader');
+  useEffect(() => {
+    const query = window.matchMedia?.(COMPACT_READER_QUERY);
+    const resetPanel = (): void => setMobileReaderView('reader');
+    query?.addEventListener('change', resetPanel);
+    return () => query?.removeEventListener('change', resetPanel);
+  }, []);
   const [library, setLibrary] = useState<PublicationDescriptor[]>([]);
   const [isRenaming, setIsRenaming] = useState(false);
   const [publication, setPublication] = useState<PublicationDescriptor | SelectedPublication>();
@@ -379,11 +387,11 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
     const handleEscape = (event: KeyboardEvent): void => {
       if (event.key !== 'Escape') return;
       if (mobileReaderView !== 'reader') setMobileReaderView('reader');
-      else changeMode('dashboard');
+      else if (!isCompactReader) changeMode('dashboard');
     };
     window.addEventListener('keydown', handleEscape);
     return () => window.removeEventListener('keydown', handleEscape);
-  }, [changeMode, mobileReaderView]);
+  }, [changeMode, mobileReaderView, isCompactReader]);
 
   const reportReaderBounds = useCallback(() => {
     if (platform.environment !== 'electron') return;
@@ -579,7 +587,7 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
   const publicationStatus = publication?.availability ?? 'none';
   const overallPercent = readerProgress ? Math.round(overallProgress(readerProgress) * 100) : 0;
   const chapterPercent = readerLocation ? Math.round(readerLocation.fractionInChapter * 100) : 0;
-  const isFocusMode = screen === 'reader' && preferences.mode === 'focus';
+  const isFocusMode = screen === 'reader' && preferences.mode === 'focus' && !isCompactReader;
   const appClassName = [
     'app',
     isFocusMode ? 'app--focus' : '',
@@ -648,63 +656,72 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
         />
       ) : (
         <main className="shell-content">
-          <aside className="shell-panel shell-panel--contents" aria-label="Contents preview">
-            <section className="publication-summary" aria-label="Current publication">
-              {parsedPublication?.metadata.coverUrl ? (
-                <img
-                  className="publication-cover"
-                  src={parsedPublication.metadata.coverUrl}
-                  alt=""
-                />
-              ) : (
-                <span className="publication-cover-placeholder" aria-hidden="true">
-                  NR
-                </span>
-              )}
-              <div className="publication-summary__text">
-                <h2>
-                  {library.find((entry) => entry.id === publication?.id)?.customTitle ??
-                    publication?.customTitle ??
-                    parsedPublication?.metadata.title ??
-                    publication?.displayName.replace(/\.epub$/i, '') ??
-                    'No book selected'}
-                </h2>
-                <p>
-                  {parsedPublication?.metadata.author ??
-                    (publication ? 'Preparing book details…' : 'Open an EPUB to begin')}
-                </p>
-              </div>
-            </section>
-
-            <section className="contents-region" aria-label="Chapter contents">
-              <header className="contents-region__header">
-                <h2>Contents</h2>
-                {parsedPublication ? (
-                  <span>{parsedPublication.spineLength.toLocaleString()}</span>
-                ) : null}
-              </header>
-
-              {parsedPublication ? (
-                <>
-                  <VirtualizedToc
-                    items={parsedPublication.toc}
-                    location={readerLocation}
-                    progress={readerProgress}
-                    busy={isNavigating}
-                    onOpen={(item) => void openTocItem(item)}
+          <MobileReaderPanel
+            compact={isCompactReader}
+            open={mobileReaderView === 'contents'}
+            kind="contents"
+            error={readerError}
+            onDismiss={() => setMobileReaderView('reader')}
+          >
+            <aside className="shell-panel shell-panel--contents" aria-label="Contents preview">
+              <section className="publication-summary" aria-label="Current publication">
+                {parsedPublication?.metadata.coverUrl ? (
+                  <img
+                    className="publication-cover"
+                    src={parsedPublication.metadata.coverUrl}
+                    alt=""
                   />
-                  <p className="contents-count">
-                    {parsedPublication.spineLength.toLocaleString()} chapters
+                ) : (
+                  <span className="publication-cover-placeholder" aria-hidden="true">
+                    NR
+                  </span>
+                )}
+                <div className="publication-summary__text">
+                  <h2>
+                    {library.find((entry) => entry.id === publication?.id)?.customTitle ??
+                      publication?.customTitle ??
+                      parsedPublication?.metadata.title ??
+                      publication?.displayName.replace(/\.epub$/i, '') ??
+                      'No book selected'}
+                  </h2>
+                  <p>
+                    {parsedPublication?.metadata.author ??
+                      (publication ? 'Preparing book details…' : 'Open an EPUB to begin')}
                   </p>
-                </>
-              ) : (
-                <div className="contents-empty">
-                  <span aria-hidden="true">—</span>
-                  <p>{publication ? 'Preparing contents…' : 'No chapters to show'}</p>
                 </div>
-              )}
-            </section>
-          </aside>
+              </section>
+
+              <section className="contents-region" aria-label="Chapter contents">
+                <header className="contents-region__header">
+                  <h2>Contents</h2>
+                  {parsedPublication ? (
+                    <span>{parsedPublication.spineLength.toLocaleString()}</span>
+                  ) : null}
+                </header>
+
+                {parsedPublication ? (
+                  <>
+                    <VirtualizedToc
+                      items={parsedPublication.toc}
+                      location={readerLocation}
+                      progress={readerProgress}
+                      busy={isNavigating}
+                      revealActive={isCompactReader && mobileReaderView === 'contents'}
+                      onOpen={(item) => void openTocItem(item)}
+                    />
+                    <p className="contents-count">
+                      {parsedPublication.spineLength.toLocaleString()} chapters
+                    </p>
+                  </>
+                ) : (
+                  <div className="contents-empty">
+                    <span aria-hidden="true">—</span>
+                    <p>{publication ? 'Preparing contents…' : 'No chapters to show'}</p>
+                  </div>
+                )}
+              </section>
+            </aside>
+          </MobileReaderPanel>
 
           <section className="reader-column" aria-label="Reading surface">
             <div
@@ -857,28 +874,45 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
             </div>
           </section>
 
-          <AppearancePanel
-            appearance={preferences.appearance}
-            mode={preferences.mode}
-            safetyLevel={preferences.safetyLevel}
-            busy={isApplyingAppearance || isNavigating || browserReaderStatus === 'opening'}
-            fullscreenAvailable={platform.capabilities.fullscreen}
-            isFullscreen={windowState.isFullScreen}
-            notices={notices}
-            onAppearanceChange={changeAppearance}
-            onModeChange={changeMode}
-            onSafetyLevelChange={changeSafetyLevel}
-            onToggleFullscreen={toggleFullscreen}
-          />
+          <MobileReaderPanel
+            compact={isCompactReader}
+            open={mobileReaderView === 'appearance'}
+            kind="appearance"
+            error={readerError}
+            onDismiss={() => setMobileReaderView('reader')}
+          >
+            <AppearancePanel
+              compact={isCompactReader}
+              appearance={preferences.appearance}
+              mode={preferences.mode}
+              safetyLevel={preferences.safetyLevel}
+              busy={isApplyingAppearance || isNavigating || browserReaderStatus === 'opening'}
+              fullscreenAvailable={platform.capabilities.fullscreen}
+              isFullscreen={windowState.isFullScreen}
+              notices={notices}
+              onAppearanceChange={changeAppearance}
+              onModeChange={changeMode}
+              onSafetyLevelChange={changeSafetyLevel}
+              onToggleFullscreen={toggleFullscreen}
+            />
+          </MobileReaderPanel>
         </main>
       )}
 
-      {screen === 'reader' ? (
+      {screen === 'reader' && isCompactReader ? (
         <nav className="mobile-reader-tabs" aria-label="Reader sections">
+          <button
+            type="button"
+            onClick={() => {
+              setMobileReaderView('reader');
+              setScreen('library');
+            }}
+          >
+            Library
+          </button>
           {(
             [
               ['contents', 'Contents'],
-              ['reader', 'Read'],
               ['appearance', 'Appearance'],
             ] as const
           ).map(([view, label]) => (
@@ -887,6 +921,7 @@ export function App({ platform, readerEngineFactory }: AppProps): React.JSX.Elem
               type="button"
               className={mobileReaderView === view ? 'is-selected' : ''}
               aria-pressed={mobileReaderView === view}
+              aria-haspopup="dialog"
               onClick={() => setMobileReaderView(view)}
             >
               {label}

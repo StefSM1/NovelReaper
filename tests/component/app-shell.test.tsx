@@ -373,7 +373,7 @@ describe('shared NovelReaper application shell', () => {
     expect(document.querySelector('.app')).not.toHaveClass('app--focus');
   });
 
-  it('keeps Contents, reading, and Appearance reachable through the compact reader navigation', async () => {
+  it('keeps desktop panels available without mounting mobile navigation', async () => {
     const user = userEvent.setup();
     const file = new File([new Uint8Array([0x50, 0x4b, 0x03, 0x04])], 'Calm.epub', {
       type: 'application/epub+zip',
@@ -399,13 +399,9 @@ describe('shared NovelReaper application shell', () => {
     await screen.findByRole('heading', { name: 'Calm Book' });
     expect(document.querySelector('.app')).toHaveClass('app--mobile-reader');
 
-    await user.click(screen.getByRole('button', { name: 'Contents', pressed: false }));
-    expect(document.querySelector('.app')).toHaveClass('app--mobile-contents');
-    await user.click(screen.getByRole('button', { name: 'Appearance', pressed: false }));
-    expect(document.querySelector('.app')).toHaveClass('app--mobile-appearance');
-
-    await user.keyboard('{Escape}');
-    expect(document.querySelector('.app')).toHaveClass('app--mobile-reader');
+    expect(screen.getByRole('complementary', { name: 'Contents preview' })).toBeVisible();
+    expect(screen.getByRole('complementary', { name: 'Appearance' })).toBeVisible();
+    expect(screen.queryByRole('navigation', { name: 'Reader sections' })).not.toBeInTheDocument();
   });
 
   it('rebuilds the detached reader and restores its locator after Library Resume', async () => {

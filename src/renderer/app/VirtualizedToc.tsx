@@ -15,6 +15,7 @@ interface VirtualizedTocProps {
   location: ReaderRelocation | undefined;
   progress: ReaderProgressState | undefined;
   busy: boolean;
+  revealActive?: boolean;
   onOpen: (item: ReaderTocItem) => void;
 }
 
@@ -31,6 +32,7 @@ export function VirtualizedToc({
   location,
   progress,
   busy,
+  revealActive = false,
   onOpen,
 }: VirtualizedTocProps): React.JSX.Element {
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -62,7 +64,7 @@ export function VirtualizedToc({
     const nextTop = Math.max(0, rowTop - Math.max(0, viewport.clientHeight / 2 - ROW_HEIGHT));
     viewport.scrollTop = nextTop;
     setScrollTop(nextTop);
-  }, [activeIndex]);
+  }, [activeIndex, revealActive, viewportHeight]);
 
   const start = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
   const end = Math.min(

@@ -10,6 +10,7 @@ import type { ReaderMode } from '../../platform/browser/browser-settings-store';
 import type { BrowserSafetyLevel } from '../../reader/strict-policy';
 
 interface AppearancePanelProps {
+  compact?: boolean;
   appearance: ReaderAppearanceSettings;
   mode: ReaderMode;
   safetyLevel: BrowserSafetyLevel;
@@ -39,6 +40,7 @@ const PAGE_WIDTH_LABELS: Record<ReaderPageWidth, string> = {
 };
 
 export function AppearancePanel({
+  compact = false,
   appearance,
   mode,
   safetyLevel,
@@ -55,7 +57,7 @@ export function AppearancePanel({
 
   return (
     <aside className="shell-panel shell-panel--appearance" aria-label="Appearance">
-      <h2>Appearance</h2>
+      {!compact ? <h2>Appearance</h2> : null}
 
       <div className="appearance-control">
         <span className="appearance-control__label">Theme</span>
@@ -169,32 +171,36 @@ export function AppearancePanel({
         </div>
       </fieldset>
 
-      <div className="appearance-action">
-        <div>
-          <strong>Focus mode</strong>
-          <small>Hide the surrounding reading controls.</small>
+      {!compact ? (
+        <div className="appearance-action">
+          <div>
+            <strong>Focus mode</strong>
+            <small>Hide the surrounding reading controls.</small>
+          </div>
+          <button
+            className="switch-control"
+            type="button"
+            role="switch"
+            aria-checked={mode === 'focus'}
+            disabled={busy}
+            onClick={() => onModeChange(mode === 'focus' ? 'dashboard' : 'focus')}
+          >
+            <span />
+            <span className="visually-hidden">Toggle focus mode</span>
+          </button>
         </div>
-        <button
-          className="switch-control"
-          type="button"
-          role="switch"
-          aria-checked={mode === 'focus'}
-          disabled={busy}
-          onClick={() => onModeChange(mode === 'focus' ? 'dashboard' : 'focus')}
-        >
-          <span />
-          <span className="visually-hidden">Toggle focus mode</span>
-        </button>
-      </div>
+      ) : null}
 
-      <button
-        className="button button--wide"
-        type="button"
-        disabled={!fullscreenAvailable}
-        onClick={onToggleFullscreen}
-      >
-        {isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
-      </button>
+      {!compact ? (
+        <button
+          className="button button--wide"
+          type="button"
+          disabled={!fullscreenAvailable}
+          onClick={onToggleFullscreen}
+        >
+          {isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+        </button>
+      ) : null}
 
       <fieldset className="appearance-control safety-control">
         <legend>EPUB safety</legend>

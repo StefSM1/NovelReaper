@@ -120,7 +120,12 @@ function syntheticChapter(title: string, text: string): string {
 export function createSyntheticEpub(options?: {
   fixedLayout?: boolean;
   longChapter?: boolean;
+  extraChapters?: number;
 }): File {
+  const extraChapters = Array.from(
+    { length: options?.extraChapters ?? 0 },
+    (_, index) => index + 3,
+  );
   const packageDocument = `<?xml version="1.0" encoding="UTF-8"?>
     <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="book-id">
       <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
@@ -135,14 +140,16 @@ export function createSyntheticEpub(options?: {
         <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
         <item id="one" href="chapter-1.xhtml" media-type="application/xhtml+xml"/>
         <item id="two" href="chapter-2.xhtml" media-type="application/xhtml+xml"/>
+        ${extraChapters.map((number) => `<item id="extra-${number}" href="chapter-${number}.xhtml" media-type="application/xhtml+xml"/>`).join('')}
       </manifest>
-      <spine><itemref idref="one"/><itemref idref="two"/></spine>
+      <spine><itemref idref="one"/><itemref idref="two"/>${extraChapters.map((number) => `<itemref idref="extra-${number}"/>`).join('')}</spine>
     </package>`;
   const nav = `<?xml version="1.0" encoding="UTF-8"?>
     <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
       <head><title>Contents</title></head><body><nav epub:type="toc"><ol>
         <li><a href="chapter-1.xhtml">A Quiet Start</a></li>
         <li><a href="chapter-2.xhtml">The Second Page</a></li>
+        ${extraChapters.map((number) => `<li><a href="chapter-${number}.xhtml">Chapter ${number}</a></li>`).join('')}
       </ol></nav></body></html>`;
   const archive = storedZip([
     ['mimetype', 'application/epub+zip'],
@@ -159,6 +166,10 @@ export function createSyntheticEpub(options?: {
       ),
     ],
     ['OEBPS/chapter-2.xhtml', syntheticChapter('The Second Page', 'Nothing leaves this fixture.')],
+    ...extraChapters.map((number): [string, string] => [
+      `OEBPS/chapter-${number}.xhtml`,
+      syntheticChapter(`Chapter ${number}`, 'An original synthetic test chapter.'),
+    ]),
   ]);
   const archiveBuffer = archive.buffer.slice(
     archive.byteOffset,

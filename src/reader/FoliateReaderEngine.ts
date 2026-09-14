@@ -106,8 +106,12 @@ function readingStyle(settings: ReaderAppearanceSettings): string {
     opacity: 0.48;
   }
   @media (max-width: 34rem) {
+    body { padding: max(2rem, env(safe-area-inset-top)) max(1.2rem, env(safe-area-inset-right)) 6rem max(1.2rem, env(safe-area-inset-left)) !important; }
     .novelreaper-chapter-navigation { align-items: stretch; flex-direction: column; }
     .novelreaper-chapter-navigation button { width: 100%; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
   }
 `;
 }
